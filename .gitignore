@@ -1,0 +1,7 @@
+.idea/
+**/.idea/
+coffee_person/.flutter-plugins
+coffee_person/.flutter-plugins-dependencies
+coffee_person/build/
+coffee_person/android/build/
+coffee_person/android/.gradle/
