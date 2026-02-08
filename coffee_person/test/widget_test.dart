@@ -13,7 +13,7 @@ class _FakeCoffeeRepository implements CoffeeStatsRepository {
   Future<void> ensureSeeded() async {}
 
   @override
-  Future<StatsSummary> getStats(StatsRange range) async {
+  Future<StatsSummary> getStats(StatsRange range, {DateTime? anchorDate}) async {
     return const StatsSummary(
       totalCups: 3,
       totalCost: 21,

@@ -44,7 +44,7 @@ class StatsSummary {
 
 abstract class CoffeeStatsRepository {
   Future<void> ensureSeeded();
-  Future<StatsSummary> getStats(StatsRange range);
+  Future<StatsSummary> getStats(StatsRange range, {DateTime? anchorDate});
   int maxDailyCount(List<int> counts);
   Future<void> addRecord(CoffeeRecord record);
   Future<void> updateRecord(CoffeeRecord record);
@@ -118,8 +118,10 @@ class CoffeeRepository implements CoffeeStatsRepository {
   }
 
   @override
-  Future<StatsSummary> getStats(StatsRange range) async {
-    final now = DateTime.now();
+  Future<StatsSummary> getStats(StatsRange range, {DateTime? anchorDate}) async {
+    final now = anchorDate == null
+        ? DateTime.now()
+        : DateTime(anchorDate.year, anchorDate.month, anchorDate.day);
     final rangeStart = _rangeStart(now, range);
     final rangeEnd = _rangeEnd(rangeStart, range);
     final records = await getRecordsInRange(rangeStart, rangeEnd);
