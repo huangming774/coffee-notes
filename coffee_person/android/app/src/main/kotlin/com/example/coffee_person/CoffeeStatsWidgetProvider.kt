@@ -30,11 +30,9 @@ class CoffeeStatsWidgetProvider : AppWidgetProvider() {
       val componentName = ComponentName(context, CoffeeStatsWidgetProvider::class.java)
       val ids = appWidgetManager.getAppWidgetIds(componentName)
       if (ids.isEmpty()) return
-      val intent = Intent(context, CoffeeStatsWidgetProvider::class.java).apply {
-        action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
-        putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
+      for (appWidgetId in ids) {
+        updateAppWidget(context, appWidgetManager, appWidgetId)
       }
-      context.sendBroadcast(intent)
     }
 
     private fun updateAppWidget(
@@ -44,8 +42,8 @@ class CoffeeStatsWidgetProvider : AppWidgetProvider() {
     ) {
       try {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val caffeineMg = prefs.getInt(KEY_TODAY_CAFFEINE, 0)
-        val cups = prefs.getInt(KEY_TODAY_CUPS, 0)
+        val caffeineMg = prefs.getLong(KEY_TODAY_CAFFEINE, 0L).toInt()
+        val cups = prefs.getLong(KEY_TODAY_CUPS, 0L).toInt()
         val date = prefs.getString(KEY_TODAY_DATE, "") ?: ""
 
         val views = RemoteViews(context.packageName, R.layout.coffee_stats_widget)

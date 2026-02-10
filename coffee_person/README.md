@@ -69,6 +69,7 @@ flutter test
 
 - AAB（上架用）：`flutter build appbundle --release`
 - APK（安装用）：`flutter build apk --release --split-per-abi`
+flutter run -d emulator-5554
 
 产物默认输出到：
 

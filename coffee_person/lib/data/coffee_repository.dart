@@ -118,7 +118,8 @@ class CoffeeRepository implements CoffeeStatsRepository {
   }
 
   @override
-  Future<StatsSummary> getStats(StatsRange range, {DateTime? anchorDate}) async {
+  Future<StatsSummary> getStats(StatsRange range,
+      {DateTime? anchorDate}) async {
     final now = anchorDate == null
         ? DateTime.now()
         : DateTime(anchorDate.year, anchorDate.month, anchorDate.day);
@@ -138,9 +139,11 @@ class CoffeeRepository implements CoffeeStatsRepository {
     final caffeineSeriesRaw = range == StatsRange.year
         ? _monthlyCaffeine(rangeStart, records)
         : _dailyCaffeine(rangeStart, rangeEnd, records);
-    final visibleCount = range == StatsRange.year
-        ? dailyCountsRaw.length
-        : min(daysElapsed, dailyCountsRaw.length);
+    final visibleCount = switch (range) {
+      StatsRange.week => dailyCountsRaw.length,
+      StatsRange.month => min(daysElapsed, dailyCountsRaw.length),
+      StatsRange.year => dailyCountsRaw.length,
+    };
     final dailyCounts =
         dailyCountsRaw.take(visibleCount).toList(growable: false);
     final caffeineSeries =

@@ -1,29 +1,16 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'weather_client.dart';
 
-class OpenMeteoCurrentWeather {
-  const OpenMeteoCurrentWeather({
-    required this.time,
-    required this.temperatureC,
-    required this.weatherCode,
-    required this.windSpeedKmh,
-    this.locationName,
-  });
-
-  final DateTime time;
-  final double temperatureC;
-  final int weatherCode;
-  final double windSpeedKmh;
-  final String? locationName;
-}
-
-class OpenMeteoClient {
+class OpenMeteoClient implements WeatherClient {
   const OpenMeteoClient();
 
-  Future<OpenMeteoCurrentWeather> fetchCurrent({
+  @override
+  Future<WeatherData> fetchCurrent({
     required double latitude,
     required double longitude,
     String language = 'zh',
+    String? apiKey,
   }) async {
     final forecastUri = Uri.https(
       'api.open-meteo.com',
@@ -55,7 +42,7 @@ class OpenMeteoClient {
       );
     } catch (_) {}
 
-    return OpenMeteoCurrentWeather(
+    return WeatherData(
       time: time,
       temperatureC: temperature,
       weatherCode: weatherCode,

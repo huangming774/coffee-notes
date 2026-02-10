@@ -1,21 +1,40 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
+import 'package:isar/isar.dart';
+import 'package:motion_photos/motion_photos.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../data/coffee_record.dart';
 
+import '../../data/coffee_diary_entry.dart';
+import '../../data/coffee_diary_repository.dart';
 import '../../data/coffee_repository.dart';
+import '../../features/diary/asset_picker_page.dart';
+import '../../features/stickers/calendar_with_stickers.dart';
+import '../../features/stickers/camera_service.dart';
+import '../../features/stickers/detection_service.dart';
+import '../../features/stickers/sticker_models.dart';
+import '../../features/stickers/sticker_store.dart';
+import '../../features/stickers/sticker_view.dart';
 import '../../features/widgets/coffee_home_widget.dart';
-import '../../features/weather/open_meteo_client.dart';
+import '../../features/weather/weather_client.dart';
+import '../../features/weather/weather_service.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/stored_image.dart';
 
@@ -86,6 +105,23 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
     setState(() {
       _summary = summary;
     });
+    await _updateHomeWidgetToday();
+  }
+
+  Future<void> _updateHomeWidgetToday() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+    final records = await widget.repository.getRecordsInRange(today, tomorrow);
+    var todayCaffeine = 0;
+    for (final r in records) {
+      todayCaffeine += r.caffeineMg;
+    }
+    await CoffeeHomeWidget.updateToday(
+      caffeineMg: todayCaffeine,
+      cups: records.length,
+      date: today,
+    );
   }
 
   Future<void> _pickAnchorDate() async {
@@ -843,20 +879,30 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
                       onAccentPaletteChange: widget.onAccentPaletteChange,
                     )
                   : index == 2
-                      ? OcrPage(
+                      ? CoffeeDiaryPage(
                           repository: widget.repository,
                           themeMode: widget.themeMode,
                           onThemeModeChange: widget.onThemeModeChange,
                           accentPalette: widget.accentPalette,
                           onAccentPaletteChange: widget.onAccentPaletteChange,
                         )
-                      : SettingsPage(
-                          repository: widget.repository,
-                          themeMode: widget.themeMode,
-                          onThemeModeChange: widget.onThemeModeChange,
-                          accentPalette: widget.accentPalette,
-                          onAccentPaletteChange: widget.onAccentPaletteChange,
-                        );
+                      : index == 3
+                          ? OcrPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            )
+                          : SettingsPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            );
               Navigator.of(context)
                   .pushReplacement(_transitionRoute(target, 1, index));
             },
@@ -920,13 +966,17 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
   double _caffeineTarget = 400;
   static const String _caffeineLimitKey = 'daily_caffeine_limit';
   static const double _todayRecordsRowMinHeight = 54;
-  OpenMeteoCurrentWeather? _weather;
+  WeatherData? _weather;
   bool _weatherLoading = false;
   String? _weatherError;
   bool _weatherNeedsPermission = false;
   bool _weatherNeedsService = false;
   bool _weatherNeedsSettings = false;
   DateTime? _weatherFetchedAt;
+  final GlobalKey _sharePosterKey = GlobalKey();
+  static const MethodChannel _shareChannel =
+      MethodChannel('coffee_person/share');
+  final CameraService _cameraService = CameraService();
 
   @override
   void initState() {
@@ -994,6 +1044,244 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
         date: _today,
       );
     }
+  }
+
+  Future<XFile?> _pickStickerImage(BuildContext context) async {
+    if (_monthLoading) return null;
+    return showModalBottomSheet<XFile?>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(20),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_outlined),
+                  title: const Text('拍照'),
+                  onTap: () async {
+                    final file = await _cameraService.pickFromCamera();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop(file);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_outlined),
+                  title: const Text('从相册选择'),
+                  onTap: () async {
+                    final file = await _cameraService.pickFromGallery();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop(file);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _addStickerForDay(DateTime date) async {
+    final picked = await _pickStickerImage(context);
+    if (picked == null) return;
+    final persisted = await persistPickedImage(picked);
+    if (!mounted) return;
+    await context.read<StickerStore>().addStickerFromImage(
+          date: date,
+          imagePath: persisted,
+        );
+  }
+
+  Future<void> _showStickerActionsForDay(DateTime date) async {
+    final dateKey = formatDateKey(date);
+    final stickers =
+        context.read<StickerStore>().stickersByDate[dateKey] ?? const [];
+    await showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(20),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.add_a_photo_outlined),
+                  title: const Text('添加贴纸'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _addStickerForDay(date);
+                  },
+                ),
+                if (stickers.isNotEmpty)
+                  ListTile(
+                    leading: const Icon(Icons.collections_outlined),
+                    title: const Text('查看贴纸'),
+                    subtitle: Text('${stickers.length} 张'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _openStickerList(date);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _openStickerViewer(String path) {
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(18),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: StickerView(path: path, size: 320),
+          ),
+        );
+      },
+    );
+  }
+
+  void _openStickerList(DateTime date) {
+    final dateKey = formatDateKey(date);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        final store = context.watch<StickerStore>();
+        final stickers = store.stickersByDate[dateKey] ?? const [];
+        final primary = Theme.of(context).brightness == Brightness.dark
+            ? AppTheme.textPrimaryDark
+            : AppTheme.textPrimaryLight;
+        final secondary = Theme.of(context).brightness == Brightness.dark
+            ? AppTheme.textSecondaryDark
+            : AppTheme.textSecondaryLight;
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+            child: SizedBox(
+              height: MediaQuery.of(context).size.height * 0.7,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 44,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(20),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${date.month}月${date.day}日 贴纸',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: primary,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        '${stickers.length} 张',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: secondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Expanded(
+                    child: stickers.isEmpty
+                        ? Center(
+                            child: Text(
+                              '暂无贴纸',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: secondary,
+                              ),
+                            ),
+                          )
+                        : GridView.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                              childAspectRatio: 1,
+                            ),
+                            itemCount: stickers.length,
+                            itemBuilder: (context, index) {
+                              final sticker = stickers[index];
+                              return GestureDetector(
+                                onTap: () => _openStickerViewer(sticker.path),
+                                onLongPress: () async {
+                                  await context
+                                      .read<StickerStore>()
+                                      .removeSticker(
+                                        dateKey: dateKey,
+                                        stickerId: sticker.id,
+                                      );
+                                },
+                                child: StickerView(
+                                  path: sticker.path,
+                                  size: 110,
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   String _weatherDescription(int code) {
@@ -1097,10 +1385,15 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.low,
       );
-      final weather = await const OpenMeteoClient().fetchCurrent(
+
+      final prefs = await SharedPreferences.getInstance();
+      final service = WeatherService(prefs);
+      final weather = await service.fetchWeather(
         latitude: position.latitude,
         longitude: position.longitude,
+        force: force,
       );
+
       if (!mounted) return;
       setState(() {
         _weather = weather;
@@ -1128,13 +1421,6 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
 
   bool _isSameMonth(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month;
-
-  bool _hasCoffeeForDay(DateTime day) {
-    for (final r in _monthRecords) {
-      if (_isSameDay(r.createdAt, day)) return true;
-    }
-    return false;
-  }
 
   int _caffeineForDay(DateTime day) {
     var sum = 0;
@@ -1167,6 +1453,138 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
     if (record.sugarG > 0) parts.add('糖 ${record.sugarG}g');
     if (record.homemade) parts.add('自制');
     return parts.join(' · ');
+  }
+
+  void _showMessage(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text)),
+    );
+  }
+
+  Future<void> _shareSelectedDay() async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        final day = _selectedDate;
+        final records = _recordsForDay(day);
+        final cups = records.length;
+        final caffeine = _caffeineForDay(day);
+        final showWeather = _isSameDay(day, _today) && _weather != null;
+        final weather = showWeather ? _weather : null;
+
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              22,
+              6,
+              22,
+              16 + MediaQuery.of(context).viewInsets.bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '喝咖日常晒圈',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontSize: 18),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('关闭'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    child: RepaintBoundary(
+                      key: _sharePosterKey,
+                      child: _CoffeeSharePoster(
+                        dateLabel: _dateLabel(day),
+                        cups: cups,
+                        caffeineMg: caffeine,
+                        accent: AppTheme.accentOf(context),
+                        weatherLine: weather == null
+                            ? null
+                            : '${weather.locationName ?? '所在地'} · ${_weatherDescription(weather.weatherCode)} · ${weather.temperatureC.round()}° · 风 ${weather.windSpeedKmh.round()} km/h',
+                        coffeeTitles: records
+                            .take(4)
+                            .map((r) => r.type.trim())
+                            .where((s) => s.isNotEmpty)
+                            .toList(growable: false),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      await WidgetsBinding.instance.endOfFrame;
+                      final renderObject =
+                          _sharePosterKey.currentContext?.findRenderObject();
+                      if (renderObject is! RenderRepaintBoundary) {
+                        _showMessage('生成分享图失败');
+                        return;
+                      }
+                      final boundary = renderObject;
+                      dynamic image;
+                      try {
+                        image = await boundary.toImage(pixelRatio: 3);
+                      } catch (_) {
+                        _showMessage('生成分享图失败');
+                        return;
+                      }
+                      final data = await image.toByteData(
+                        format: ImageByteFormat.png,
+                      );
+                      if (data == null) {
+                        _showMessage('生成分享图失败');
+                        return;
+                      }
+                      final pngBytes = data.buffer.asUint8List();
+                      final shareText =
+                          '咖记 · ${_dateLabel(day)}：$cups 杯 · ${caffeine}mg';
+                      try {
+                        await _shareChannel.invokeMethod<void>(
+                          'shareImage',
+                          <String, Object?>{
+                            'bytes': pngBytes,
+                            'text': shareText,
+                          },
+                        );
+                      } catch (_) {
+                        _showMessage('当前平台暂不支持分享');
+                      }
+                    },
+                    icon: const Icon(Icons.ios_share_outlined),
+                    label: const Text('分享图片'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _openRecordEditor(CoffeeRecord record) async {
@@ -1333,20 +1751,6 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  List<DateTime?> _calendarCellsForMonth(DateTime month) {
-    final firstDay = DateTime(month.year, month.month, 1);
-    final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
-    final leading = firstDay.weekday - 1;
-    final total = leading + daysInMonth;
-    final rowCount = ((total + 6) / 7).floor();
-    final cellCount = rowCount * 7;
-    return List<DateTime?>.generate(cellCount, (index) {
-      final day = index - leading + 1;
-      if (day < 1 || day > daysInMonth) return null;
-      return DateTime(month.year, month.month, day);
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
@@ -1362,9 +1766,9 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
           0.35,
         ) ??
         cardColor;
+    final stickersByDate = context.watch<StickerStore>().stickersByDate;
 
     final month = DateTime(_selectedDate.year, _selectedDate.month, 1);
-    final cells = _calendarCellsForMonth(month);
 
     final caffeineSelected = _caffeineForDay(_selectedDate);
     final caffeineProgress =
@@ -1396,45 +1800,90 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
                       color: primary,
                     ),
                   ),
-                  Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () {
-                        final nextMonthStart =
-                            DateTime(_today.year, _today.month, 1);
-                        setState(() {
-                          _selectedDate = _today;
-                          _monthStart = nextMonthStart;
-                        });
-                        _loadMonth(nextMonthStart);
-                        _loadWeather(requestPermission: false, force: true);
-                      },
-                      borderRadius: BorderRadius.circular(18),
-                      child: Ink(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .scaffoldBackgroundColor
-                              .withAlpha(70),
+                  Row(
+                    children: [
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {
+                            final nextMonthStart =
+                                DateTime(_today.year, _today.month, 1);
+                            setState(() {
+                              _selectedDate = _today;
+                              _monthStart = nextMonthStart;
+                            });
+                            _loadMonth(nextMonthStart);
+                            _loadWeather(requestPermission: false, force: true);
+                          },
                           borderRadius: BorderRadius.circular(18),
-                          border: Border.all(
-                            color: AppTheme.accentOf(context).withAlpha(80),
-                            width: 1,
-                          ),
-                        ),
-                        child: Text(
-                          '今天',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.accentOf(context),
+                          child: Ink(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .scaffoldBackgroundColor
+                                  .withAlpha(70),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: AppTheme.accentOf(context).withAlpha(80),
+                                width: 1,
+                              ),
+                            ),
+                            child: Text(
+                              '今天',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.accentOf(context),
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                      const SizedBox(width: 10),
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: _shareSelectedDay,
+                          borderRadius: BorderRadius.circular(18),
+                          child: Ink(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppTheme.accentOf(context).withAlpha(16),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color:
+                                    AppTheme.accentOf(context).withAlpha(110),
+                                width: 1,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.ios_share_outlined,
+                                  size: 16,
+                                  color: AppTheme.accentOf(context),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '晒圈',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppTheme.accentOf(context),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -1594,7 +2043,7 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
               const SizedBox(height: 18),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                padding: const EdgeInsets.fromLTRB(10, 18, 10, 18),
                 decoration: BoxDecoration(
                   color: cardColor,
                   borderRadius: BorderRadius.circular(30),
@@ -1633,82 +2082,53 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
                           ),
                       ],
                     ),
-                    const SizedBox(height: 14),
-                    GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 7,
-                        crossAxisSpacing: 10,
-                        mainAxisSpacing: 10,
-                        childAspectRatio: 1,
-                      ),
-                      itemCount: cells.length,
-                      itemBuilder: (context, index) {
-                        final date = cells[index];
-                        if (date == null) {
-                          return const SizedBox.shrink();
-                        }
-                        final selected = _isSameDay(date, _selectedDate);
-                        final isToday = _isSameDay(date, _today);
-                        final hasCoffee = _hasCoffeeForDay(date);
-                        final background = selected
-                            ? AppTheme.accentOf(context).withAlpha(210)
-                            : tileColor;
-                        final border = !selected && isToday
-                            ? Border.all(
-                                color:
-                                    AppTheme.accentOf(context).withAlpha(120),
-                                width: 1.2,
-                              )
-                            : null;
-                        final textColor = selected ? Colors.white : primary;
-                        return GestureDetector(
-                          onTap: () {
-                            if (_isSameDay(date, _selectedDate)) return;
+                    const SizedBox(height: 12),
+                    Stack(
+                      children: [
+                        CalendarWithStickers(
+                          focusedDay: _selectedDate,
+                          selectedDay: _selectedDate,
+                          onDaySelected: (day) {
+                            final isSame = _isSameDay(day, _selectedDate);
                             final nextMonthStart =
-                                DateTime(date.year, date.month, 1);
+                                DateTime(day.year, day.month, 1);
                             setState(() {
-                              _selectedDate = date;
+                              _selectedDate = day;
                             });
                             if (!_isSameMonth(nextMonthStart, _monthStart)) {
                               _monthStart = nextMonthStart;
                               _loadMonth(_monthStart);
                             }
+                            if (isSame) {
+                              _showStickerActionsForDay(day);
+                            }
                           },
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: background,
-                              borderRadius: BorderRadius.circular(16),
-                              border: border,
-                            ),
-                            child: Stack(
-                              children: [
-                                Center(
-                                  child: Text(
-                                    '${date.day}',
-                                    style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w700,
-                                      color: textColor,
-                                    ),
+                          onStickerTap: (sticker) =>
+                              _openStickerViewer(sticker.path),
+                          onStickerLongPress: (sticker) =>
+                              context.read<StickerStore>().removeSticker(
+                                    dateKey: sticker.dateKey,
+                                    stickerId: sticker.id,
                                   ),
-                                ),
-                                if (hasCoffee)
-                                  const Positioned(
-                                    top: 6,
-                                    right: 6,
-                                    child: Text(
-                                      '☕️',
-                                      style: TextStyle(fontSize: 14),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
+                          onPageChanged: (focused) {
+                            final nextMonthStart =
+                                DateTime(focused.year, focused.month, 1);
+                            if (_isSameMonth(nextMonthStart, _monthStart)) {
+                              return;
+                            }
+                            setState(() {
+                              _selectedDate = nextMonthStart;
+                              _monthStart = nextMonthStart;
+                            });
+                            _loadMonth(nextMonthStart);
+                          },
+                          stickersByDate: stickersByDate,
+                          primary: primary,
+                          secondary: secondary,
+                          accent: AppTheme.accentOf(context),
+                          tileColor: tileColor,
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -2001,23 +2421,234 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
                       onAccentPaletteChange: widget.onAccentPaletteChange,
                     )
                   : index == 2
-                      ? OcrPage(
+                      ? CoffeeDiaryPage(
                           repository: widget.repository,
                           themeMode: widget.themeMode,
                           onThemeModeChange: widget.onThemeModeChange,
                           accentPalette: widget.accentPalette,
                           onAccentPaletteChange: widget.onAccentPaletteChange,
                         )
-                      : SettingsPage(
-                          repository: widget.repository,
-                          themeMode: widget.themeMode,
-                          onThemeModeChange: widget.onThemeModeChange,
-                          accentPalette: widget.accentPalette,
-                          onAccentPaletteChange: widget.onAccentPaletteChange,
-                        );
+                      : index == 3
+                          ? OcrPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            )
+                          : SettingsPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            );
               Navigator.of(context)
                   .pushReplacement(_transitionRoute(target, 0, index));
             },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CoffeeSharePoster extends StatelessWidget {
+  const _CoffeeSharePoster({
+    required this.dateLabel,
+    required this.cups,
+    required this.caffeineMg,
+    required this.accent,
+    required this.coffeeTitles,
+    this.weatherLine,
+  });
+
+  final String dateLabel;
+  final int cups;
+  final int caffeineMg;
+  final Color accent;
+  final String? weatherLine;
+  final List<String> coffeeTitles;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    final secondary =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    final bg = isDark ? const Color(0xFF171311) : const Color(0xFFF6EFE7);
+    final bg2 = isDark ? const Color(0xFF241B16) : const Color(0xFFFFFFFF);
+
+    final coffeeLine = coffeeTitles.isEmpty ? '暂无记录' : coffeeTitles.join(' · ');
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [bg, bg2],
+          ),
+          border: Border.all(
+            color: accent.withAlpha(isDark ? 60 : 45),
+            width: 1,
+          ),
+        ),
+        child: AspectRatio(
+          aspectRatio: 4 / 5,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: accent.withAlpha(isDark ? 32 : 22),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      '喝咖日常',
+                      style: TextStyle(
+                        color: accent,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '咖记',
+                    style: TextStyle(
+                      color: primary.withAlpha(isDark ? 215 : 190),
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                dateLabel,
+                style: TextStyle(
+                  color: secondary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    cups.toString(),
+                    style: TextStyle(
+                      color: primary,
+                      fontSize: 54,
+                      height: 1.0,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      '杯',
+                      style: TextStyle(
+                        color: secondary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: (isDark ? Colors.white : Colors.black)
+                          .withAlpha(isDark ? 14 : 10),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      '$caffeineMg mg',
+                      style: TextStyle(
+                        color: primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '今日喝了：$coffeeLine',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: primary.withAlpha(isDark ? 220 : 200),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (weatherLine != null && weatherLine!.trim().isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: accent.withAlpha(isDark ? 22 : 16),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: accent.withAlpha(isDark ? 55 : 40),
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    weatherLine!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: secondary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+              const Spacer(),
+              Row(
+                children: [
+                  Icon(
+                    Icons.local_cafe_outlined,
+                    size: 16,
+                    color: accent.withAlpha(isDark ? 220 : 200),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '打卡分享 · 喝咖日常晒圈',
+                    style: TextStyle(
+                      color: secondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
       ),
@@ -2051,15 +2682,22 @@ class _SettingsPageState extends State<SettingsPage> {
   static const String _openAiApiKeyKey = 'openai_api_key';
   static const String _openAiBaseUrlKey = 'openai_base_url';
   static const String _openAiModelKey = 'openai_model';
+  static const String _useMlKitDetectionKey = DetectionService.useMlKitKey;
+  static const String _githubRepoUrl =
+      'https://github.com/huangming774/coffee-notes';
 
   late AppAccentPalette _selectedPalette;
   late ThemeMode _selectedThemeMode;
   bool _aiTesting = false;
+  bool _useMlKitDetection = false;
   final TextEditingController _openAiApiKeyController = TextEditingController();
   final TextEditingController _openAiBaseUrlController = TextEditingController(
     text: 'https://api.openai.com/v1',
   );
   final TextEditingController _openAiModelController = TextEditingController();
+
+  WeatherSource _selectedWeatherSource = WeatherSource.openMeteo;
+  final TextEditingController _owmApiKeyController = TextEditingController();
 
   @override
   void initState() {
@@ -2067,7 +2705,9 @@ class _SettingsPageState extends State<SettingsPage> {
     _selectedPalette = widget.accentPalette;
     _selectedThemeMode = widget.themeMode;
     _loadCaffeineLimit();
+    _loadDetectionEngine();
     _loadAiConfig();
+    _loadWeatherConfig();
   }
 
   @override
@@ -2075,6 +2715,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _openAiApiKeyController.dispose();
     _openAiBaseUrlController.dispose();
     _openAiModelController.dispose();
+    _owmApiKeyController.dispose();
     super.dispose();
   }
 
@@ -2110,6 +2751,15 @@ class _SettingsPageState extends State<SettingsPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(text)),
     );
+  }
+
+  Future<void> _openGithubRepo() async {
+    final uri = Uri.parse(_githubRepoUrl);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok) {
+      await Clipboard.setData(const ClipboardData(text: _githubRepoUrl));
+      _showMessage('已复制 GitHub 地址');
+    }
   }
 
   Future<void> _showAboutSheet() async {
@@ -2202,6 +2852,64 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: _openGithubRepo,
+                    behavior: HitTestBehavior.translucent,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      decoration: BoxDecoration(
+                        color: cardColor,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: (isDark ? Colors.white : Colors.black)
+                              .withAlpha(10),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.link,
+                            color: AppTheme.accentOf(context),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'GitHub 项目地址',
+                                  style: textTheme.titleMedium?.copyWith(
+                                    fontSize: 15,
+                                    color: primary,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _githubRepoUrl,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    color: secondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(
+                            Icons.open_in_new,
+                            color: secondary,
+                            size: 18,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   Text(
                     '提示：如需更换主题或每日咖啡因上限，可在设置页直接调整。',
                     style: textTheme.bodyMedium?.copyWith(color: secondary),
@@ -2210,6 +2918,191 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showWeatherConfigSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        final textTheme = Theme.of(context).textTheme;
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final cardColor = isDark ? AppTheme.darkCard : Colors.white;
+        final secondary =
+            isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 22,
+                  right: 22,
+                  top: 6,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '天气配置',
+                              style:
+                                  textTheme.titleMedium?.copyWith(fontSize: 18),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () async {
+                              await _clearWeatherConfig();
+                              if (context.mounted) Navigator.of(context).pop();
+                            },
+                            child: const Text('清空并关闭'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '配置天气数据来源及相关 API Key。',
+                        style: textTheme.bodyMedium?.copyWith(color: secondary),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        '天气源',
+                        style: textTheme.bodySmall?.copyWith(
+                          color: secondary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: cardColor,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: (isDark ? Colors.white : Colors.black)
+                                .withAlpha(10),
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            RadioListTile<WeatherSource>(
+                              title: const Text('Open-Meteo'),
+                              subtitle: const Text('免费，无需 API Key'),
+                              value: WeatherSource.openMeteo,
+                              groupValue: _selectedWeatherSource,
+                              activeColor: AppTheme.accentOf(context),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setSheetState(() {
+                                    _selectedWeatherSource = val;
+                                  });
+                                  setState(() {
+                                    _selectedWeatherSource = val;
+                                  });
+                                }
+                              },
+                            ),
+                            Divider(
+                              height: 1,
+                              indent: 16,
+                              endIndent: 16,
+                              color: (isDark ? Colors.white : Colors.black)
+                                  .withAlpha(10),
+                            ),
+                            RadioListTile<WeatherSource>(
+                              title: const Text('OpenWeatherMap'),
+                              subtitle: const Text('需配置 API Key'),
+                              value: WeatherSource.openWeatherMap,
+                              groupValue: _selectedWeatherSource,
+                              activeColor: AppTheme.accentOf(context),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setSheetState(() {
+                                    _selectedWeatherSource = val;
+                                  });
+                                  setState(() {
+                                    _selectedWeatherSource = val;
+                                  });
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_selectedWeatherSource ==
+                          WeatherSource.openWeatherMap) ...[
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _owmApiKeyController,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          obscureText: true,
+                          decoration: InputDecoration(
+                            labelText: 'OpenWeatherMap API Key',
+                            hintText: '输入你的 API Key',
+                            filled: true,
+                            fillColor: cardColor,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: BorderSide(
+                                color: (isDark ? Colors.white : Colors.black)
+                                    .withAlpha(10),
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: BorderSide(
+                                color: (isDark ? Colors.white : Colors.black)
+                                    .withAlpha(10),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 22),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            await _saveWeatherConfig();
+                            if (context.mounted) Navigator.of(context).pop();
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.accentOf(context),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            elevation: 0,
+                          ),
+                          child: const Text(
+                            '保存配置',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
         );
       },
     );
@@ -2227,6 +3120,10 @@ class _SettingsPageState extends State<SettingsPage> {
       '• path_provider',
       '• shared_preferences',
       '• image_picker / cross_file',
+      '• photo_manager',
+      '• motion_photos',
+      '• video_player',
+      '• url_launcher',
       '• google_mlkit_text_recognition',
       '• flutter_displaymode',
       '',
@@ -2301,6 +3198,64 @@ class _SettingsPageState extends State<SettingsPage> {
                         fontSize: 13,
                         height: 1.35,
                         color: primary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: _openGithubRepo,
+                    behavior: HitTestBehavior.translucent,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      decoration: BoxDecoration(
+                        color: cardColor,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: (isDark ? Colors.white : Colors.black)
+                              .withAlpha(10),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.link,
+                            color: AppTheme.accentOf(context),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'GitHub 项目地址',
+                                  style: textTheme.titleMedium?.copyWith(
+                                    fontSize: 15,
+                                    color: primary,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _githubRepoUrl,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    color: secondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(
+                            Icons.open_in_new,
+                            color: secondary,
+                            size: 18,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -2454,6 +3409,19 @@ class _SettingsPageState extends State<SettingsPage> {
     await prefs.setDouble(_caffeineLimitKey, limit);
   }
 
+  Future<void> _loadDetectionEngine() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getBool(_useMlKitDetectionKey) ?? false;
+    if (!mounted) return;
+    setState(() {
+      _useMlKitDetection = saved;
+    });
+  }
+
+  Future<void> _saveDetectionEngine(bool useMlKit) async {
+    await DetectionService.saveUseMlKit(useMlKit);
+  }
+
   Future<void> _loadAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
     final apiKey = prefs.getString(_openAiApiKeyKey) ?? '';
@@ -2492,6 +3460,37 @@ class _SettingsPageState extends State<SettingsPage> {
     _openAiBaseUrlController.text = 'https://api.openai.com/v1';
     _openAiModelController.clear();
     _showMessage('AI 配置已清空');
+  }
+
+  Future<void> _loadWeatherConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final service = WeatherService(prefs);
+    if (!mounted) return;
+    setState(() {
+      _selectedWeatherSource = service.source;
+      _owmApiKeyController.text = service.owmApiKey;
+    });
+  }
+
+  Future<void> _saveWeatherConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final service = WeatherService(prefs);
+    await service.setSource(_selectedWeatherSource);
+    await service.setOwmApiKey(_owmApiKeyController.text.trim());
+    _showMessage('天气配置已保存');
+  }
+
+  Future<void> _clearWeatherConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('weather_source');
+    await prefs.remove('owm_api_key');
+    await prefs.remove('weather_cache');
+    if (!mounted) return;
+    setState(() {
+      _selectedWeatherSource = WeatherSource.openMeteo;
+      _owmApiKeyController.clear();
+    });
+    _showMessage('天气配置已清空');
   }
 
   Uri? _normalizeBaseUrl(String input) {
@@ -2831,6 +3830,45 @@ class _SettingsPageState extends State<SettingsPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
+                      '贴纸识别引擎',
+                      style: textTheme.titleMedium?.copyWith(fontSize: 18),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _useMlKitDetection ? '当前：ML Kit' : '当前：YOLOv8 本地模型',
+                      style: textTheme.bodyMedium?.copyWith(color: secondary),
+                    ),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton(
+                        onPressed: () {
+                          final next = !_useMlKitDetection;
+                          setState(() {
+                            _useMlKitDetection = next;
+                          });
+                          _saveDetectionEngine(next);
+                        },
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppTheme.accentOf(context),
+                          side: BorderSide(
+                            color: AppTheme.accentOf(context).withAlpha(120),
+                          ),
+                        ),
+                        child: Text(
+                          _useMlKitDetection ? '切换到 YOLOv8' : '切换到 ML Kit',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              _StatCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
                       '每日咖啡因上限',
                       style: textTheme.titleMedium?.copyWith(fontSize: 18),
                     ),
@@ -3000,6 +4038,52 @@ class _SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 14),
               _StatCard(
                 child: GestureDetector(
+                  onTap: _showWeatherConfigSheet,
+                  behavior: HitTestBehavior.translucent,
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: AppTheme.accentOf(context).withAlpha(28),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          Icons.cloud_outlined,
+                          color: AppTheme.accentOf(context),
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '天气配置',
+                              style:
+                                  textTheme.titleMedium?.copyWith(fontSize: 18),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '配置天气源与 API Key',
+                              style: textTheme.bodyMedium
+                                  ?.copyWith(color: secondary),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(Icons.chevron_right,
+                          color: AppTheme.accentOf(context)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              _StatCard(
+                child: GestureDetector(
                   onTap: _showAboutSheet,
                   behavior: HitTestBehavior.translucent,
                   child: Row(
@@ -3149,9 +4233,9 @@ class _SettingsPageState extends State<SettingsPage> {
           padding:
               const EdgeInsets.fromLTRB(22, 0, 22, _bottomNavBottomPadding),
           child: _BottomNavBar(
-            selectedIndex: 3,
+            selectedIndex: 4,
             onSelect: (index) {
-              if (index == 3) return;
+              if (index == 4) return;
               final target = index == 0
                   ? CoffeePage(
                       repository: widget.repository,
@@ -3168,15 +4252,25 @@ class _SettingsPageState extends State<SettingsPage> {
                           accentPalette: _selectedPalette,
                           onAccentPaletteChange: widget.onAccentPaletteChange,
                         )
-                      : OcrPage(
-                          repository: widget.repository,
-                          themeMode: _selectedThemeMode,
-                          onThemeModeChange: widget.onThemeModeChange,
-                          accentPalette: _selectedPalette,
-                          onAccentPaletteChange: widget.onAccentPaletteChange,
-                        );
+                      : index == 2
+                          ? CoffeeDiaryPage(
+                              repository: widget.repository,
+                              themeMode: _selectedThemeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: _selectedPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            )
+                          : OcrPage(
+                              repository: widget.repository,
+                              themeMode: _selectedThemeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: _selectedPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            );
               Navigator.of(context)
-                  .pushReplacement(_transitionRoute(target, 3, index));
+                  .pushReplacement(_transitionRoute(target, 4, index));
             },
           ),
         ),
@@ -3203,6 +4297,1505 @@ class OcrPage extends StatefulWidget {
 
   @override
   State<OcrPage> createState() => _OcrPageState();
+}
+
+class CoffeeDiaryPage extends StatefulWidget {
+  const CoffeeDiaryPage({
+    super.key,
+    required this.repository,
+    required this.themeMode,
+    required this.onThemeModeChange,
+    required this.accentPalette,
+    required this.onAccentPaletteChange,
+  });
+
+  final CoffeeStatsRepository repository;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeChange;
+  final AppAccentPalette accentPalette;
+  final ValueChanged<AppAccentPalette> onAccentPaletteChange;
+
+  @override
+  State<CoffeeDiaryPage> createState() => _CoffeeDiaryPageState();
+}
+
+class _CoffeeDiaryPageState extends State<CoffeeDiaryPage> {
+  String _dateLabel(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  Future<void> _openEditor({CoffeeDiaryEntry? initial}) async {
+    final changed = await Navigator.of(context).push<bool>(
+      _bottomUpRoute<bool>(
+        AddDiaryEntryPage(initialEntry: initial),
+      ),
+    );
+    if (!mounted) return;
+    if (changed == true) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _openDetail(Id entryId) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => DiaryEntryDetailPage(entryId: entryId),
+      ),
+    );
+    if (!mounted) return;
+    if (changed == true) {
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final diaryRepository = context.read<CoffeeDiaryRepository>();
+    final textTheme = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? AppTheme.darkCard : AppTheme.lightCard;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    final secondary =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const SizedBox(width: 70),
+                  Text(
+                    '日记',
+                    style: textTheme.titleMedium
+                        ?.copyWith(fontSize: 18, color: primary),
+                  ),
+                  GestureDetector(
+                    onTap: () => _openEditor(),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isDark ? AppTheme.darkCard : Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(isDark ? 90 : 18),
+                            blurRadius: 16,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        '写日记',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: StreamBuilder<List<CoffeeDiaryEntry>>(
+                stream: diaryRepository.watchAll(),
+                builder: (context, snapshot) {
+                  final entries = snapshot.data ?? const [];
+                  if (entries.isEmpty) {
+                    return Center(
+                      child: Text(
+                        '还没有日记',
+                        style: textTheme.bodyMedium?.copyWith(color: secondary),
+                      ),
+                    );
+                  }
+                  return ListView.separated(
+                    padding: EdgeInsets.fromLTRB(
+                      18,
+                      12,
+                      18,
+                      _bottomNavReservedSpace(context) + 12,
+                    ),
+                    itemBuilder: (context, index) {
+                      final entry = entries[index];
+                      final images = entry.imagePaths;
+                      final preview = images.take(3).toList(growable: false);
+                      return GestureDetector(
+                        onTap: () => _openDetail(entry.id),
+                        child: Container(
+                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                          decoration: BoxDecoration(
+                            color: cardColor,
+                            borderRadius: BorderRadius.circular(26),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withAlpha(isDark ? 55 : 10),
+                                blurRadius: 18,
+                                offset: const Offset(0, 10),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _dateLabel(entry.date),
+                                style: textTheme.titleMedium?.copyWith(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                  color: primary,
+                                ),
+                              ),
+                              if ((entry.text ?? '').trim().isNotEmpty) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  entry.text!.trim(),
+                                  maxLines: 4,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    color: secondary,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ],
+                              if (preview.isNotEmpty) ...[
+                                const SizedBox(height: 12),
+                                SizedBox(
+                                  height: 76,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemBuilder: (context, i) {
+                                      final path = preview[i];
+                                      final videoPath =
+                                          i < entry.motionVideoPaths.length
+                                              ? entry.motionVideoPaths[i]
+                                              : '';
+                                      return Stack(
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(18),
+                                            child: SizedBox(
+                                              width: 76,
+                                              height: 76,
+                                              child: storedImage(
+                                                path,
+                                                fit: BoxFit.cover,
+                                              ),
+                                            ),
+                                          ),
+                                          if (videoPath.trim().isNotEmpty)
+                                            Positioned(
+                                              left: 6,
+                                              top: 6,
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 6,
+                                                  vertical: 3,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black
+                                                      .withAlpha(110),
+                                                  borderRadius:
+                                                      BorderRadius.circular(10),
+                                                ),
+                                                child: const Text(
+                                                  'LIVE',
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w800,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      );
+                                    },
+                                    separatorBuilder: (_, __) =>
+                                        const SizedBox(width: 10),
+                                    itemCount: preview.length,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    itemCount: entries.length,
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding:
+              const EdgeInsets.fromLTRB(22, 0, 22, _bottomNavBottomPadding),
+          child: _BottomNavBar(
+            selectedIndex: 2,
+            onSelect: (index) {
+              if (index == 2) return;
+              final target = index == 0
+                  ? CoffeePage(
+                      repository: widget.repository,
+                      themeMode: widget.themeMode,
+                      onThemeModeChange: widget.onThemeModeChange,
+                      accentPalette: widget.accentPalette,
+                      onAccentPaletteChange: widget.onAccentPaletteChange,
+                    )
+                  : index == 1
+                      ? StatsPage(
+                          repository: widget.repository,
+                          themeMode: widget.themeMode,
+                          onThemeModeChange: widget.onThemeModeChange,
+                          accentPalette: widget.accentPalette,
+                          onAccentPaletteChange: widget.onAccentPaletteChange,
+                        )
+                      : index == 3
+                          ? OcrPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            )
+                          : SettingsPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            );
+              Navigator.of(context)
+                  .pushReplacement(_transitionRoute(target, 2, index));
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class DiaryEntryDetailPage extends StatefulWidget {
+  const DiaryEntryDetailPage({super.key, required this.entryId});
+
+  final Id entryId;
+
+  @override
+  State<DiaryEntryDetailPage> createState() => _DiaryEntryDetailPageState();
+}
+
+class _DiaryEntryDetailPageState extends State<DiaryEntryDetailPage> {
+  String _dateLabel(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  Future<void> _openImage(String imagePath) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(18),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: AspectRatio(
+              aspectRatio: 1,
+              child: storedImage(imagePath, fit: BoxFit.cover),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openMedia({
+    required String imagePath,
+    required String videoPath,
+    required bool preferMotion,
+  }) async {
+    if (preferMotion && videoPath.trim().isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _MotionPreviewDialog(videoPath: videoPath),
+      );
+      return;
+    }
+    await _openImage(imagePath);
+  }
+
+  Future<void> _edit(CoffeeDiaryEntry entry) async {
+    final changed = await Navigator.of(context).push<bool>(
+      _bottomUpRoute<bool>(AddDiaryEntryPage(initialEntry: entry)),
+    );
+    if (!mounted) return;
+    if (changed == true) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _delete(CoffeeDiaryEntry entry) async {
+    final repo = context.read<CoffeeDiaryRepository>();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        final errorColor = Theme.of(context).colorScheme.error;
+        return AlertDialog(
+          title: const Text('删除这篇日记？'),
+          content: const Text('删除后无法恢复。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: errorColor),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) return;
+    await repo.deleteEntry(entry.id);
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final repo = context.read<CoffeeDiaryRepository>();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textTheme = Theme.of(context).textTheme;
+    final cardColor = isDark ? AppTheme.darkCard : AppTheme.lightCard;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    final secondary =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    return Scaffold(
+      body: SafeArea(
+        child: StreamBuilder<List<CoffeeDiaryEntry>>(
+          stream: repo.watchAll(),
+          builder: (context, snapshot) {
+            final entry = (snapshot.data ?? const [])
+                .where((e) => e.id == widget.entryId)
+                .cast<CoffeeDiaryEntry?>()
+                .firstWhere((e) => e != null, orElse: () => null);
+            if (entry == null) {
+              return Center(
+                child: Text(
+                  '日记不存在或已删除',
+                  style: textTheme.bodyMedium?.copyWith(color: secondary),
+                ),
+              );
+            }
+            final images = entry.imagePaths;
+            final videos = entry.motionVideoPaths;
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).pop(false),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 18, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: isDark ? AppTheme.darkCard : Colors.white,
+                            borderRadius: BorderRadius.circular(18),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withAlpha(isDark ? 90 : 18),
+                                blurRadius: 16,
+                                offset: const Offset(0, 8),
+                              ),
+                            ],
+                          ),
+                          child: Text(
+                            '返回',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Text(
+                        _dateLabel(entry.date),
+                        style: textTheme.titleMedium
+                            ?.copyWith(fontSize: 18, color: primary),
+                      ),
+                      Row(
+                        children: [
+                          GestureDetector(
+                            onTap: () => _edit(entry),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color:
+                                    isDark ? AppTheme.darkCard : Colors.white,
+                                borderRadius: BorderRadius.circular(18),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black
+                                        .withAlpha(isDark ? 90 : 18),
+                                    blurRadius: 16,
+                                    offset: const Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              child: Icon(
+                                Icons.edit_outlined,
+                                color: primary,
+                                size: 18,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          GestureDetector(
+                            onTap: () => _delete(entry),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color:
+                                    isDark ? AppTheme.darkCard : Colors.white,
+                                borderRadius: BorderRadius.circular(18),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black
+                                        .withAlpha(isDark ? 90 : 18),
+                                    blurRadius: 16,
+                                    offset: const Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              child: Icon(
+                                Icons.delete_outline,
+                                color: Theme.of(context).colorScheme.error,
+                                size: 18,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(18, 12, 18, 26),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (images.isNotEmpty) ...[
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: [
+                              for (final e in images.asMap().entries)
+                                Stack(
+                                  children: [
+                                    GestureDetector(
+                                      onTap: () => _openMedia(
+                                        imagePath: e.value,
+                                        videoPath: e.key < videos.length
+                                            ? videos[e.key]
+                                            : '',
+                                        preferMotion: false,
+                                      ),
+                                      onLongPress: () => _openMedia(
+                                        imagePath: e.value,
+                                        videoPath: e.key < videos.length
+                                            ? videos[e.key]
+                                            : '',
+                                        preferMotion: true,
+                                      ),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(18),
+                                        child: SizedBox(
+                                          width: 110,
+                                          height: 110,
+                                          child: storedImage(
+                                            e.value,
+                                            fit: BoxFit.cover,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    if (e.key < videos.length &&
+                                        videos[e.key].trim().isNotEmpty)
+                                      Positioned(
+                                        left: 8,
+                                        top: 8,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withAlpha(110),
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                          ),
+                                          child: const Text(
+                                            'LIVE',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 18),
+                        ],
+                        if ((entry.text ?? '').trim().isNotEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 14),
+                            decoration: BoxDecoration(
+                              color: cardColor,
+                              borderRadius: BorderRadius.circular(22),
+                              border: Border.all(
+                                color: (isDark ? Colors.white : Colors.black)
+                                    .withAlpha(10),
+                              ),
+                            ),
+                            child: Text(
+                              entry.text!.trim(),
+                              style: textTheme.bodyMedium?.copyWith(
+                                color: secondary,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class AddDiaryEntryPage extends StatefulWidget {
+  const AddDiaryEntryPage({super.key, this.initialEntry});
+
+  final CoffeeDiaryEntry? initialEntry;
+
+  @override
+  State<AddDiaryEntryPage> createState() => _AddDiaryEntryPageState();
+}
+
+class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
+  final TextEditingController _textController = TextEditingController();
+  final CameraService _cameraService = CameraService();
+  DateTime _date = DateTime.now();
+  List<String> _imagePaths = [];
+  List<String> _motionVideoPaths = [];
+  bool _saving = false;
+
+  bool get _isEditing => widget.initialEntry != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initialEntry;
+    if (initial != null) {
+      _date = initial.date;
+      _textController.text = (initial.text ?? '').trim();
+      _imagePaths = List<String>.from(initial.imagePaths);
+      final rawVideos = initial.motionVideoPaths;
+      if (rawVideos.length == _imagePaths.length) {
+        _motionVideoPaths = List<String>.from(rawVideos);
+      } else {
+        _motionVideoPaths = List<String>.filled(_imagePaths.length, '');
+      }
+    } else {
+      _motionVideoPaths = [];
+    }
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  String _dateLabel(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  Widget _sectionTitle(String text) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final color =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    return Padding(
+      padding: const EdgeInsets.only(top: 18, bottom: 10),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickDate() async {
+    if (_saving) return;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked == null) return;
+    setState(() {
+      _date = DateTime(picked.year, picked.month, picked.day);
+    });
+  }
+
+  Future<void> _pickImage() async {
+    if (_saving) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(20),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_outlined),
+                  title: const Text('拍照'),
+                  onTap: () async {
+                    final file = await _cameraService.pickFromCamera();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop();
+                    if (file == null) return;
+                    await _addPickedXFile(file);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_outlined),
+                  title: const Text('从相册选择'),
+                  onTap: () async {
+                    final file = await _cameraService.pickFromGallery();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop();
+                    if (file == null) return;
+                    await _addPickedXFile(file);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.motion_photos_on_outlined),
+                  title: const Text('从相册选择（支持实况）'),
+                  onTap: () async {
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop();
+                    await _pickFromSystemGallery();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<String> _persistDiaryFile(File file) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final targetDir = Directory('${dir.path}/diary_media');
+    if (!targetDir.existsSync()) {
+      targetDir.createSync(recursive: true);
+    }
+    final path = file.path;
+    final dot = path.lastIndexOf('.');
+    final ext = dot >= 0 ? path.substring(dot) : '.jpg';
+    final filename = 'diary_${DateTime.now().millisecondsSinceEpoch}$ext';
+    final targetPath = '${targetDir.path}/$filename';
+    await file.copy(targetPath);
+    return targetPath;
+  }
+
+  Future<void> _addPickedXFile(XFile file) async {
+    final persisted = await persistPickedImage(file);
+    if (!mounted) return;
+    setState(() {
+      _imagePaths = [..._imagePaths, persisted];
+      _motionVideoPaths = [..._motionVideoPaths, ''];
+    });
+  }
+
+  Future<void> _pickFromSystemGallery() async {
+    if (kIsWeb) return;
+    final asset = await Navigator.of(context).push<AssetEntity?>(
+      MaterialPageRoute(builder: (_) => const DiaryAssetPickerPage()),
+    );
+    if (!mounted) return;
+    if (asset == null) return;
+    final origin = await asset.originFile;
+    if (!mounted) return;
+    if (origin == null) return;
+    final persistedImage = await _persistDiaryFile(origin);
+    var persistedVideo = '';
+    var isMotion = false;
+    var usedPairedVideo = false;
+    try {
+      final motionPhotos = MotionPhotos(origin.path);
+      isMotion = await motionPhotos.isMotionPhoto();
+      if (isMotion) {
+        final dir = await getApplicationDocumentsDirectory();
+        final targetDir = Directory('${dir.path}/diary_media');
+        if (!targetDir.existsSync()) {
+          targetDir.createSync(recursive: true);
+        }
+        final file = await motionPhotos.getMotionVideoFile(
+          targetDir,
+          fileName: 'motion_${DateTime.now().millisecondsSinceEpoch}.mp4',
+        );
+        persistedVideo = file.path;
+      }
+    } catch (_) {}
+    if (persistedVideo.trim().isEmpty) {
+      final paired = await _tryFindPairedMotionVideo(asset);
+      if (!mounted) return;
+      if (paired.trim().isNotEmpty) {
+        persistedVideo = paired;
+        usedPairedVideo = true;
+      }
+    }
+    if (persistedVideo.trim().isEmpty) {
+      final manual = await _pickPairedVideo();
+      if (!mounted) return;
+      if (manual.trim().isNotEmpty) {
+        persistedVideo = manual;
+        usedPairedVideo = true;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _imagePaths = [..._imagePaths, persistedImage];
+      _motionVideoPaths = [..._motionVideoPaths, persistedVideo];
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          persistedVideo.trim().isNotEmpty
+              ? (usedPairedVideo ? '已识别实况照片（配对视频）' : '已识别实况照片')
+              : (isMotion ? '实况检测成功但提取失败（将按普通照片保存）' : '未识别到实况视频（将按普通照片保存）'),
+        ),
+      ),
+    );
+  }
+
+  Future<String> _pickPairedVideo() async {
+    if (!mounted) return '';
+    final navigator = Navigator.of(context);
+    final shouldPick = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('未识别到实况视频'),
+          content: const Text('是否手动选择配对视频？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('跳过'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('选择'),
+            ),
+          ],
+        );
+      },
+    );
+    if (!mounted) return '';
+    if (shouldPick != true) return '';
+    final picked = await navigator.push<AssetEntity?>(
+      MaterialPageRoute(
+        builder: (_) => const DiaryAssetPickerPage(
+          requestType: RequestType.video,
+          title: '选择配对视频',
+        ),
+      ),
+    );
+    if (!mounted) return '';
+    if (picked == null) return '';
+    final origin = await picked.originFile;
+    if (!mounted) return '';
+    if (origin == null) return '';
+    final persisted = await _persistDiaryFile(origin);
+    if (!mounted) return '';
+    return persisted;
+  }
+
+  String _stripExt(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
+  }
+
+  String _extractTimeToken(String text) {
+    final normalized = text.replaceAll('-', '_');
+    final m1 = RegExp(r'\d{8}_\d{6}').firstMatch(normalized);
+    if (m1 != null) {
+      return m1.group(0)!.replaceAll('_', '');
+    }
+    final m2 = RegExp(r'\d{12,14}').firstMatch(text);
+    if (m2 != null) return m2.group(0)!;
+    final m3 = RegExp(r'\d{10,}').firstMatch(text);
+    if (m3 != null) return m3.group(0)!;
+    return '';
+  }
+
+  int _absInt(int v) => v < 0 ? -v : v;
+
+  Future<String> _tryFindPairedMotionVideo(AssetEntity imageAsset) async {
+    if (kIsWeb) return '';
+    if (defaultTargetPlatform != TargetPlatform.android) return '';
+    final imageTime = imageAsset.createDateTime;
+    final imageTitle = imageAsset.title ?? '';
+    final imageBase = _stripExt(imageTitle);
+    final imageToken = _extractTimeToken(imageBase);
+    final imageFolder = imageAsset.relativePath ?? '';
+    final optionGroup = FilterOptionGroup(
+      orders: [
+        const OrderOption(type: OrderOptionType.createDate, asc: false),
+      ],
+    );
+    final videoPaths = await PhotoManager.getAssetPathList(
+      type: RequestType.video,
+      filterOption: optionGroup,
+      onlyAll: true,
+    );
+    if (!mounted) return '';
+    if (videoPaths.isEmpty) return '';
+    final allVideos = videoPaths.first;
+
+    const windowSeconds = 20;
+    const maxPages = 12;
+    const size = 200;
+    var bestScore = -1;
+    AssetEntity? best;
+
+    for (var page = 0; page < maxPages; page++) {
+      final list = await allVideos.getAssetListPaged(page: page, size: size);
+      if (!mounted) return '';
+      if (list.isEmpty) break;
+      for (final v in list) {
+        if (v.type != AssetType.video) continue;
+        final dt = _absInt(v.createDateTime.difference(imageTime).inSeconds);
+        if (dt > windowSeconds) continue;
+        var score = 0;
+        if (dt <= 1) score += 8;
+        if (dt <= 3) score += 6;
+        if (dt <= 8) score += 4;
+        if (dt <= 20) score += 2;
+        final vFolder = v.relativePath ?? '';
+        if (imageFolder.isNotEmpty && vFolder == imageFolder) score += 8;
+        final vTitle = v.title ?? '';
+        final vBase = _stripExt(vTitle);
+        final vToken = _extractTimeToken(vBase);
+        if (imageToken.isNotEmpty &&
+            vToken.isNotEmpty &&
+            (vToken.contains(imageToken) || imageToken.contains(vToken))) {
+          score += 14;
+          if (imageBase.startsWith('IMG') && vBase.startsWith('VID')) {
+            score += 4;
+          }
+        }
+        if (imageBase.isNotEmpty && vBase == imageBase) score += 10;
+        if (imageBase.isNotEmpty &&
+            (vBase.contains(imageBase) || imageBase.contains(vBase))) {
+          score += 4;
+        }
+        final duration = v.duration;
+        if (duration > 0 && duration <= 6) score += 4;
+        if (duration > 6 && duration <= 10) score += 2;
+        if (score > bestScore) {
+          bestScore = score;
+          best = v;
+        }
+      }
+      final oldest = list.last.createDateTime;
+      final tooOld =
+          oldest.isBefore(imageTime.subtract(const Duration(minutes: 10)));
+      if (tooOld) break;
+    }
+
+    if (best == null) return '';
+    if (bestScore < 12) return '';
+    final file = await best.originFile;
+    if (!mounted) return '';
+    if (file == null) return '';
+    final persisted = await _persistDiaryFile(file);
+    if (!mounted) return '';
+    return persisted;
+  }
+
+  Future<void> _removeMediaAt(int index) async {
+    if (_saving) return;
+    final imagePath =
+        index >= 0 && index < _imagePaths.length ? _imagePaths[index] : '';
+    final videoPath = index >= 0 && index < _motionVideoPaths.length
+        ? _motionVideoPaths[index]
+        : '';
+    setState(() {
+      final nextImages = List<String>.from(_imagePaths)..removeAt(index);
+      final nextVideos = List<String>.from(_motionVideoPaths)..removeAt(index);
+      _imagePaths = nextImages;
+      _motionVideoPaths = nextVideos;
+    });
+    for (final p in [imagePath, videoPath]) {
+      if (p.trim().isEmpty) continue;
+      try {
+        final file = File(p);
+        if (file.existsSync()) {
+          await file.delete();
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _openMediaPreview(int index,
+      {required bool preferMotion}) async {
+    if (index < 0 || index >= _imagePaths.length) return;
+    final imagePath = _imagePaths[index];
+    final videoPath =
+        index < _motionVideoPaths.length ? _motionVideoPaths[index] : '';
+    if (preferMotion && videoPath.trim().isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => _MotionPreviewDialog(videoPath: videoPath),
+      );
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(18),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: AspectRatio(
+              aspectRatio: 1,
+              child: storedImage(imagePath, fit: BoxFit.cover),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+    });
+    final repo = context.read<CoffeeDiaryRepository>();
+    final existing = widget.initialEntry;
+    final entry = CoffeeDiaryEntry();
+    if (existing != null) {
+      entry.id = existing.id;
+      entry.createdAt = existing.createdAt;
+    } else {
+      entry.createdAt = DateTime.now();
+    }
+    entry.date = DateTime(_date.year, _date.month, _date.day);
+    final text = _textController.text.trim();
+    entry.text = text.isEmpty ? null : text;
+    entry.imagePaths = List<String>.from(_imagePaths);
+    entry.motionVideoPaths = List<String>.from(_motionVideoPaths);
+    await repo.upsertEntry(entry);
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _delete() async {
+    if (_saving) return;
+    final existing = widget.initialEntry;
+    if (existing == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        final errorColor = Theme.of(context).colorScheme.error;
+        return AlertDialog(
+          title: const Text('删除这篇日记？'),
+          content: const Text('删除后无法恢复。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: errorColor),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) return;
+    if (!mounted) return;
+    setState(() {
+      _saving = true;
+    });
+    final repo = context.read<CoffeeDiaryRepository>();
+    await repo.deleteEntry(existing.id);
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? AppTheme.darkCard : AppTheme.lightCard;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    final secondary =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  GestureDetector(
+                    onTap:
+                        _saving ? null : () => Navigator.of(context).pop(false),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isDark ? AppTheme.darkCard : Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(isDark ? 90 : 18),
+                            blurRadius: 16,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        '取消',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Text(
+                    _isEditing ? '编辑日记' : '添加日记',
+                    style: textTheme.titleMedium
+                        ?.copyWith(fontSize: 18, color: primary),
+                  ),
+                  GestureDetector(
+                    onTap: _saving ? null : _save,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isDark ? AppTheme.darkCard : Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(isDark ? 90 : 18),
+                            blurRadius: 16,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        _saving ? '保存中' : '保存',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 26),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _sectionTitle('日期'),
+                    GestureDetector(
+                      onTap: _pickDate,
+                      child: Container(
+                        height: 56,
+                        width: double.infinity,
+                        alignment: Alignment.centerLeft,
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        decoration: BoxDecoration(
+                          color: cardColor,
+                          borderRadius: BorderRadius.circular(22),
+                          border: Border.all(
+                            color: (isDark ? Colors.white : Colors.black)
+                                .withAlpha(10),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              _dateLabel(_date),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
+                                color: primary,
+                              ),
+                            ),
+                            Icon(Icons.calendar_month_outlined,
+                                color: secondary),
+                          ],
+                        ),
+                      ),
+                    ),
+                    _sectionTitle('图片（选填）'),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final e in _imagePaths.asMap().entries)
+                          Stack(
+                            children: [
+                              GestureDetector(
+                                onTap: () => _openMediaPreview(
+                                  e.key,
+                                  preferMotion: false,
+                                ),
+                                onLongPress: () => _openMediaPreview(
+                                  e.key,
+                                  preferMotion: true,
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(18),
+                                  child: SizedBox(
+                                    width: 96,
+                                    height: 96,
+                                    child: storedImage(
+                                      e.value,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              if (e.key < _motionVideoPaths.length &&
+                                  _motionVideoPaths[e.key].trim().isNotEmpty)
+                                Positioned(
+                                  left: 6,
+                                  top: 6,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withAlpha(110),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: const Text(
+                                      'LIVE',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              Positioned(
+                                top: 6,
+                                right: 6,
+                                child: GestureDetector(
+                                  onTap: _saving
+                                      ? null
+                                      : () => _removeMediaAt(e.key),
+                                  child: Container(
+                                    width: 26,
+                                    height: 26,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withAlpha(110),
+                                      borderRadius: BorderRadius.circular(13),
+                                    ),
+                                    child: const Icon(
+                                      Icons.close,
+                                      size: 16,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        GestureDetector(
+                          onTap: _pickImage,
+                          child: Container(
+                            width: 96,
+                            height: 96,
+                            decoration: BoxDecoration(
+                              color: cardColor.withAlpha(isDark ? 110 : 245),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: (isDark ? Colors.white : Colors.black)
+                                    .withAlpha(10),
+                              ),
+                            ),
+                            alignment: Alignment.center,
+                            child: Icon(
+                              Icons.add_a_photo_outlined,
+                              color: AppTheme.accentOf(context).withAlpha(200),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    _sectionTitle('文字（选填）'),
+                    TextField(
+                      controller: _textController,
+                      enabled: !_saving,
+                      minLines: 6,
+                      maxLines: 14,
+                      decoration: InputDecoration(
+                        hintText: '写下今天的咖啡心情…',
+                        filled: true,
+                        fillColor: cardColor,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(22),
+                          borderSide: BorderSide(
+                            color: (isDark ? Colors.white : Colors.black)
+                                .withAlpha(10),
+                          ),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(22),
+                          borderSide: BorderSide(
+                            color: (isDark ? Colors.white : Colors.black)
+                                .withAlpha(10),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (_isEditing) ...[
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor:
+                                Theme.of(context).colorScheme.error,
+                            minimumSize: const Size.fromHeight(54),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(26),
+                            ),
+                          ),
+                          onPressed: _saving ? null : _delete,
+                          child: const Text(
+                            '删除这篇日记',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MotionPreviewDialog extends StatefulWidget {
+  const _MotionPreviewDialog({required this.videoPath});
+
+  final String videoPath;
+
+  @override
+  State<_MotionPreviewDialog> createState() => _MotionPreviewDialogState();
+}
+
+class _MotionPreviewDialogState extends State<_MotionPreviewDialog> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    final controller = VideoPlayerController.file(File(widget.videoPath));
+    await controller.initialize();
+    await controller.setLooping(true);
+    await controller.play();
+    if (!mounted) {
+      await controller.dispose();
+      return;
+    }
+    setState(() {
+      _controller = controller;
+      _ready = true;
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+    return Dialog(
+      insetPadding: const EdgeInsets.all(18),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: AspectRatio(
+          aspectRatio:
+              _ready && controller != null ? controller.value.aspectRatio : 1,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_ready && controller != null) VideoPlayer(controller),
+              if (!_ready)
+                const Center(
+                  child: CircularProgressIndicator(),
+                ),
+              Positioned(
+                right: 10,
+                top: 10,
+                child: GestureDetector(
+                  onTap: () => Navigator.of(context).pop(),
+                  child: Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withAlpha(110),
+                      borderRadius: BorderRadius.circular(17),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ),
+              ),
+              if (_ready && controller != null)
+                Positioned(
+                  left: 10,
+                  top: 10,
+                  child: GestureDetector(
+                    onTap: () {
+                      if (!controller.value.isInitialized) return;
+                      if (controller.value.isPlaying) {
+                        controller.pause();
+                      } else {
+                        controller.play();
+                      }
+                      setState(() {});
+                    },
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(110),
+                        borderRadius: BorderRadius.circular(17),
+                      ),
+                      alignment: Alignment.center,
+                      child: Icon(
+                        controller.value.isPlaying
+                            ? Icons.pause
+                            : Icons.play_arrow,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _OcrPageState extends State<OcrPage> {
@@ -4167,9 +6760,9 @@ class _OcrPageState extends State<OcrPage> {
           padding:
               const EdgeInsets.fromLTRB(22, 0, 22, _bottomNavBottomPadding),
           child: _BottomNavBar(
-            selectedIndex: 2,
+            selectedIndex: 3,
             onSelect: (index) {
-              if (index == 2) return;
+              if (index == 3) return;
               final target = index == 0
                   ? CoffeePage(
                       repository: widget.repository,
@@ -4186,15 +6779,25 @@ class _OcrPageState extends State<OcrPage> {
                           accentPalette: widget.accentPalette,
                           onAccentPaletteChange: widget.onAccentPaletteChange,
                         )
-                      : SettingsPage(
-                          repository: widget.repository,
-                          themeMode: widget.themeMode,
-                          onThemeModeChange: widget.onThemeModeChange,
-                          accentPalette: widget.accentPalette,
-                          onAccentPaletteChange: widget.onAccentPaletteChange,
-                        );
+                      : index == 2
+                          ? CoffeeDiaryPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            )
+                          : SettingsPage(
+                              repository: widget.repository,
+                              themeMode: widget.themeMode,
+                              onThemeModeChange: widget.onThemeModeChange,
+                              accentPalette: widget.accentPalette,
+                              onAccentPaletteChange:
+                                  widget.onAccentPaletteChange,
+                            );
               Navigator.of(context)
-                  .pushReplacement(_transitionRoute(target, 2, index));
+                  .pushReplacement(_transitionRoute(target, 3, index));
             },
           ),
         ),
@@ -5106,27 +7709,41 @@ class _BottomNavBar extends StatelessWidget {
             ],
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _NavItem(
-                icon: Icons.local_cafe_outlined,
-                selected: selectedIndex == 0,
-                onTap: () => onSelect(0),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.local_cafe_outlined,
+                  selected: selectedIndex == 0,
+                  onTap: () => onSelect(0),
+                ),
               ),
-              _NavItem(
-                icon: Icons.show_chart_outlined,
-                selected: selectedIndex == 1,
-                onTap: () => onSelect(1),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.show_chart_outlined,
+                  selected: selectedIndex == 1,
+                  onTap: () => onSelect(1),
+                ),
               ),
-              _NavItem(
-                icon: Icons.document_scanner_outlined,
-                selected: selectedIndex == 2,
-                onTap: () => onSelect(2),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.menu_book_outlined,
+                  selected: selectedIndex == 2,
+                  onTap: () => onSelect(2),
+                ),
               ),
-              _NavItem(
-                icon: Icons.settings_outlined,
-                selected: selectedIndex == 3,
-                onTap: () => onSelect(3),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.document_scanner_outlined,
+                  selected: selectedIndex == 3,
+                  onTap: () => onSelect(3),
+                ),
+              ),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.settings_outlined,
+                  selected: selectedIndex == 4,
+                  onTap: () => onSelect(4),
+                ),
               ),
             ],
           ),
@@ -5153,35 +7770,45 @@ class _NavItem extends StatelessWidget {
     final color = selected
         ? AppTheme.accentOf(context)
         : (isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(22),
-        child: Container(
-          width: 60,
-          height: 60,
-          alignment: Alignment.center,
-          decoration: selected
-              ? BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      AppTheme.accentOf(context).withAlpha(46),
-                      AppTheme.accentOf(context).withAlpha(18),
-                    ],
-                  ),
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(
-                    color: AppTheme.accentOf(context).withAlpha(70),
-                    width: 1,
-                  ),
-                )
-              : null,
-          child: Icon(icon, color: color, size: 30),
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final raw = constraints.maxWidth.isFinite ? constraints.maxWidth : 60.0;
+        final size = min(60.0, max(44.0, raw));
+        final radius = size * (22 / 60);
+        final iconSize = size * 0.5;
+        return Center(
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(radius),
+              child: Container(
+                width: size,
+                height: size,
+                alignment: Alignment.center,
+                decoration: selected
+                    ? BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            AppTheme.accentOf(context).withAlpha(46),
+                            AppTheme.accentOf(context).withAlpha(18),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(radius),
+                        border: Border.all(
+                          color: AppTheme.accentOf(context).withAlpha(70),
+                          width: 1,
+                        ),
+                      )
+                    : null,
+                child: Icon(icon, color: color, size: iconSize),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -5216,10 +7843,22 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
   double _caffeineMg = 75;
   double _sugarG = 0;
   bool _homemade = false;
+  String _beanRoast = '中烘';
+  String _grindSize = '中细';
+  String _brewTimeUnit = 'm';
   String? _imagePath;
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _priceController = TextEditingController();
   final TextEditingController _noteController = TextEditingController();
+  final TextEditingController _beanNameController = TextEditingController();
+  final TextEditingController _beanOriginController = TextEditingController();
+  final TextEditingController _beanFlavorController = TextEditingController();
+  final TextEditingController _brewMethodController = TextEditingController();
+  final TextEditingController _doseGController = TextEditingController();
+  final TextEditingController _waterMlController = TextEditingController();
+  final TextEditingController _brewTimeController = TextEditingController();
+  final TextEditingController _brewNoteController = TextEditingController();
+  final CameraService _cameraService = CameraService();
   bool _saving = false;
 
   bool get _isEditing => widget.initialRecord != null;
@@ -5240,9 +7879,29 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
       if ((initialRecord.name ?? '').trim().isNotEmpty) {
         _nameController.text = initialRecord.name!.trim();
       }
-      if ((initialRecord.note ?? '').trim().isNotEmpty) {
-        _noteController.text = initialRecord.note!.trim();
+      final parsed = _extractHomemadeSection((initialRecord.note ?? '').trim());
+      final cleanedNote = parsed.$1;
+      final fields = parsed.$2;
+      if (cleanedNote.trim().isNotEmpty) {
+        _noteController.text = cleanedNote.trim();
       }
+      _beanNameController.text = (fields['咖啡豆'] ?? '').trim();
+      _beanOriginController.text = (fields['产地'] ?? '').trim();
+      _beanRoast = (fields['烘焙'] ?? _beanRoast).trim();
+      _beanFlavorController.text = (fields['风味'] ?? '').trim();
+      _brewMethodController.text = (fields['冲煮'] ?? '').trim();
+      _grindSize = (fields['研磨'] ?? _grindSize).trim();
+      _doseGController.text = (fields['粉量(g)'] ?? '').trim();
+      _waterMlController.text = (fields['水量(ml)'] ?? '').trim();
+      final time = (fields['时间'] ?? '').trim();
+      final timeMatch = RegExp(r'^(\d+)\s*([sm])$').firstMatch(time);
+      if (timeMatch != null) {
+        _brewTimeController.text = timeMatch.group(1) ?? '';
+        _brewTimeUnit = timeMatch.group(2) ?? _brewTimeUnit;
+      } else {
+        _brewTimeController.text = time;
+      }
+      _brewNoteController.text = (fields['备注'] ?? '').trim();
       final cost = initialRecord.cost;
       _priceController.text =
           cost % 1 == 0 ? cost.toStringAsFixed(0) : cost.toStringAsFixed(2);
@@ -5270,7 +7929,169 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
     _nameController.dispose();
     _priceController.dispose();
     _noteController.dispose();
+    _beanNameController.dispose();
+    _beanOriginController.dispose();
+    _beanFlavorController.dispose();
+    _brewMethodController.dispose();
+    _doseGController.dispose();
+    _waterMlController.dispose();
+    _brewTimeController.dispose();
+    _brewNoteController.dispose();
     super.dispose();
+  }
+
+  (String, Map<String, String>) _extractHomemadeSection(String note) {
+    const startMarker = '【自制咖啡】';
+    const endMarker = '【/自制咖啡】';
+    final start = note.indexOf(startMarker);
+    if (start < 0) return (note, const {});
+    final end = note.indexOf(endMarker, start);
+    if (end < 0) {
+      final cleaned = note.substring(0, start).trim();
+      return (cleaned, const {});
+    }
+    final block = note.substring(start + startMarker.length, end).trim();
+    final cleaned =
+        (note.substring(0, start) + note.substring(end + endMarker.length))
+            .trim();
+    final map = <String, String>{};
+    for (final rawLine in block.split('\n')) {
+      final line = rawLine.trim();
+      if (line.isEmpty) continue;
+      final index = line.indexOf('：');
+      if (index <= 0) continue;
+      final key = line.substring(0, index).trim();
+      final value = line.substring(index + 1).trim();
+      if (key.isEmpty) continue;
+      map[key] = value;
+    }
+    return (cleaned, map);
+  }
+
+  String _buildHomemadeSectionIfNeeded() {
+    if (!_homemade) return '';
+    final beanName = _beanNameController.text.trim();
+    final origin = _beanOriginController.text.trim();
+    final roast = _beanRoast.trim();
+    final flavor = _beanFlavorController.text.trim();
+    final method = _brewMethodController.text.trim();
+    final grind = _grindSize.trim();
+    final dose = _doseGController.text.trim();
+    final water = _waterMlController.text.trim();
+    final timeValue = _brewTimeController.text.trim();
+    final time = timeValue.isEmpty ? '' : '$timeValue$_brewTimeUnit';
+    final brewNote = _brewNoteController.text.trim();
+    final hasAny = beanName.isNotEmpty ||
+        origin.isNotEmpty ||
+        flavor.isNotEmpty ||
+        method.isNotEmpty ||
+        dose.isNotEmpty ||
+        water.isNotEmpty ||
+        timeValue.isNotEmpty ||
+        brewNote.isNotEmpty;
+    if (!hasAny) return '';
+    final lines = <String>[
+      '【自制咖啡】',
+      if (beanName.isNotEmpty) '咖啡豆：$beanName',
+      if (origin.isNotEmpty) '产地：$origin',
+      if (roast.isNotEmpty) '烘焙：$roast',
+      if (flavor.isNotEmpty) '风味：$flavor',
+      if (method.isNotEmpty) '冲煮：$method',
+      if (grind.isNotEmpty) '研磨：$grind',
+      if (dose.isNotEmpty) '粉量(g)：$dose',
+      if (water.isNotEmpty) '水量(ml)：$water',
+      if (time.isNotEmpty) '时间：$time',
+      if (brewNote.isNotEmpty) '备注：$brewNote',
+      '【/自制咖啡】',
+    ];
+    return lines.join('\n');
+  }
+
+  Widget _miniPillButton({required IconData icon, required String text}) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? Colors.white.withAlpha(14) : Colors.black.withAlpha(8);
+    final fg = isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: fg.withAlpha(190)),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: fg.withAlpha(210),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _smallOption({
+    required String text,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = selected
+        ? AppTheme.accentOf(context).withAlpha(210)
+        : (isDark ? AppTheme.darkCard : Colors.white);
+    final fg = selected
+        ? Colors.white
+        : (isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight);
+    return GestureDetector(
+      onTap: _saving ? null : onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: (isDark ? Colors.white : Colors.black).withAlpha(10),
+          ),
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+            color: fg,
+          ),
+        ),
+      ),
+    );
+  }
+
+  InputDecoration _filledInputDecoration({
+    required Color cardColor,
+    required bool isDark,
+    String? hintText,
+  }) {
+    return InputDecoration(
+      hintText: hintText,
+      filled: true,
+      fillColor: cardColor,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(22),
+        borderSide: BorderSide(
+          color: (isDark ? Colors.white : Colors.black).withAlpha(10),
+        ),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(22),
+        borderSide: BorderSide(
+          color: (isDark ? Colors.white : Colors.black).withAlpha(10),
+        ),
+      ),
+    );
   }
 
   String _dateTimeLabel(DateTime dt) {
@@ -5299,10 +8120,51 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
 
   Future<void> _pickImage() async {
     if (_saving) return;
-    final picker = ImagePicker();
-    final picked = await picker.pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 2048,
+    final picked = await showModalBottomSheet<XFile?>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(20),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_outlined),
+                  title: const Text('拍照'),
+                  onTap: () async {
+                    final file = await _cameraService.pickFromCamera();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop(file);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_outlined),
+                  title: const Text('从相册选择'),
+                  onTap: () async {
+                    final file = await _cameraService.pickFromGallery();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop(file);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
     if (picked == null) return;
     final persisted = await persistPickedImage(picked);
@@ -5310,6 +8172,14 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
     setState(() {
       _imagePath = persisted;
     });
+    try {
+      final day = DateTime(_createdAt.year, _createdAt.month, _createdAt.day);
+      unawaited(
+        context
+            .read<StickerStore>()
+            .addStickerFromImage(date: day, imagePath: persisted),
+      );
+    } catch (_) {}
   }
 
   Future<void> _save() async {
@@ -5319,7 +8189,13 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
     });
     final cost = double.tryParse(_priceController.text.trim()) ?? 0;
     final name = _nameController.text.trim();
-    final note = _noteController.text.trim();
+    final noteRaw = _noteController.text.trim();
+    final note = _extractHomemadeSection(noteRaw).$1.trim();
+    final homemadeSection = _buildHomemadeSectionIfNeeded();
+    final combinedNote = [
+      note,
+      homemadeSection,
+    ].where((s) => s.trim().isNotEmpty).join('\n\n').trim();
     final existing = widget.initialRecord;
     if (existing != null) {
       final record = CoffeeRecord()
@@ -5331,7 +8207,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
         ..name = name.isEmpty ? null : name
         ..cupSize = _cupSize
         ..temperature = _temp
-        ..note = note.isEmpty ? null : note
+        ..note = combinedNote.isEmpty ? null : combinedNote
         ..imagePath = _imagePath
         ..cost = cost
         ..createdAt = _createdAt;
@@ -5345,7 +8221,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
         ..name = name.isEmpty ? null : name
         ..cupSize = _cupSize
         ..temperature = _temp
-        ..note = note.isEmpty ? null : note
+        ..note = combinedNote.isEmpty ? null : combinedNote
         ..imagePath = _imagePath
         ..cost = cost
         ..createdAt = _createdAt;
@@ -5385,6 +8261,30 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
       _saving = true;
     });
     await widget.repository.deleteRecord(existing.id);
+    final deletedImagePath = (existing.imagePath ?? '').trim();
+    if (deletedImagePath.isNotEmpty && mounted) {
+      final dayStart = DateTime(
+        existing.createdAt.year,
+        existing.createdAt.month,
+        existing.createdAt.day,
+      );
+      final dayEnd = dayStart.add(const Duration(days: 1));
+      final remaining =
+          await widget.repository.getRecordsInRange(dayStart, dayEnd);
+      if (!mounted) return;
+      final stillHasImage = remaining.any(
+        (r) => (r.imagePath ?? '').trim().isNotEmpty,
+      );
+      if (!stillHasImage) {
+        final dateKey = formatDateKey(dayStart);
+        final store = context.read<StickerStore>();
+        final stickers = store.stickersByDate[dateKey] ?? const [];
+        if (stickers.isNotEmpty) {
+          await store.removeSticker(
+              dateKey: dateKey, stickerId: stickers.first.id);
+        }
+      }
+    }
     if (!mounted) return;
     Navigator.of(context).pop(true);
   }
@@ -5549,7 +8449,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   Icon(
-                                    Icons.photo_camera_outlined,
+                                    Icons.add_a_photo_outlined,
                                     color: AppTheme.accentOf(context)
                                         .withAlpha(180),
                                     size: 34,
@@ -5696,15 +8596,60 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
                       ),
                     ),
                     _sectionTitle('自制咖啡'),
-                    _StatCard(
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                      decoration: BoxDecoration(
+                        color: cardColor,
+                        borderRadius: BorderRadius.circular(26),
+                        border: Border.all(
+                          color: AppTheme.accentOf(context).withAlpha(120),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(isDark ? 55 : 10),
+                            blurRadius: 18,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
                       child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            '自制',
-                            style: textTheme.titleMedium?.copyWith(
-                              fontSize: 18,
-                              color: primary,
+                          Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              color: AppTheme.accentOf(context).withAlpha(18),
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            alignment: Alignment.center,
+                            child: Icon(
+                              Icons.home_rounded,
+                              color: AppTheme.accentOf(context).withAlpha(220),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '自制咖啡',
+                                  style: textTheme.titleMedium?.copyWith(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: primary,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '记录咖啡豆和冲煮详情',
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: secondary,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                           Switch(
@@ -5712,14 +8657,364 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
                             activeColor: AppTheme.accentOf(context),
                             onChanged: _saving
                                 ? null
-                                : (v) {
-                                    setState(() {
-                                      _homemade = v;
-                                    });
-                                  },
+                                : (v) => setState(() => _homemade = v),
                           ),
                         ],
                       ),
+                    ),
+                    const SizedBox(height: 12),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      child: !_homemade
+                          ? const SizedBox.shrink()
+                          : Column(
+                              key: const ValueKey('homemade_form'),
+                              children: [
+                                _StatCard(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            '咖啡豆',
+                                            style:
+                                                textTheme.titleMedium?.copyWith(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: primary,
+                                            ),
+                                          ),
+                                          _miniPillButton(
+                                            icon: Icons.folder_open_outlined,
+                                            text: '模板',
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '咖啡豆',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _beanNameController,
+                                        enabled: !_saving,
+                                        decoration: _filledInputDecoration(
+                                          cardColor: cardColor,
+                                          isDark: isDark,
+                                          hintText: '埃塞俄比亚耶加雪菲',
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '产地',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _beanOriginController,
+                                        enabled: !_saving,
+                                        decoration: _filledInputDecoration(
+                                          cardColor: cardColor,
+                                          isDark: isDark,
+                                          hintText: '埃塞俄比亚，哥伦比亚',
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '烘焙程度',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 10,
+                                        runSpacing: 10,
+                                        children: [
+                                          for (final v in const [
+                                            '浅烘',
+                                            '中烘',
+                                            '深烘'
+                                          ])
+                                            _smallOption(
+                                              text: v,
+                                              selected: _beanRoast == v,
+                                              onTap: () => setState(
+                                                  () => _beanRoast = v),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '风味描述',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _beanFlavorController,
+                                        enabled: !_saving,
+                                        decoration: _filledInputDecoration(
+                                          cardColor: cardColor,
+                                          isDark: isDark,
+                                          hintText: '柑橘，花香，巧克力',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                                _StatCard(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            '冲煮详情',
+                                            style:
+                                                textTheme.titleMedium?.copyWith(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: primary,
+                                            ),
+                                          ),
+                                          _miniPillButton(
+                                            icon: Icons.folder_open_outlined,
+                                            text: '模板',
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '冲煮方法',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _brewMethodController,
+                                        enabled: !_saving,
+                                        decoration: _filledInputDecoration(
+                                          cardColor: cardColor,
+                                          isDark: isDark,
+                                          hintText: '例如：V60，法压壶，爱乐压',
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '研磨粗细',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 10,
+                                        runSpacing: 10,
+                                        children: [
+                                          for (final v in const [
+                                            '极细',
+                                            '细',
+                                            '中细',
+                                            '中',
+                                            '粗'
+                                          ])
+                                            _smallOption(
+                                              text: v,
+                                              selected: _grindSize == v,
+                                              onTap: () => setState(
+                                                  () => _grindSize = v),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  '粉量 (g)',
+                                                  style: TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: secondary,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 8),
+                                                TextField(
+                                                  controller: _doseGController,
+                                                  enabled: !_saving,
+                                                  keyboardType:
+                                                      TextInputType.number,
+                                                  decoration:
+                                                      _filledInputDecoration(
+                                                    cardColor: cardColor,
+                                                    isDark: isDark,
+                                                    hintText: '15',
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  '水量 (ml)',
+                                                  style: TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: secondary,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 8),
+                                                TextField(
+                                                  controller:
+                                                      _waterMlController,
+                                                  enabled: !_saving,
+                                                  keyboardType:
+                                                      TextInputType.number,
+                                                  decoration:
+                                                      _filledInputDecoration(
+                                                    cardColor: cardColor,
+                                                    isDark: isDark,
+                                                    hintText: '250',
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '冲煮时间',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextField(
+                                              controller: _brewTimeController,
+                                              enabled: !_saving,
+                                              keyboardType:
+                                                  TextInputType.number,
+                                              decoration:
+                                                  _filledInputDecoration(
+                                                cardColor: cardColor,
+                                                isDark: isDark,
+                                                hintText: '2',
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                            ),
+                                            height: 52,
+                                            decoration: BoxDecoration(
+                                              color: cardColor,
+                                              borderRadius:
+                                                  BorderRadius.circular(18),
+                                              border: Border.all(
+                                                color: (isDark
+                                                        ? Colors.white
+                                                        : Colors.black)
+                                                    .withAlpha(10),
+                                              ),
+                                            ),
+                                            alignment: Alignment.center,
+                                            child: DropdownButton<String>(
+                                              value: _brewTimeUnit,
+                                              underline:
+                                                  const SizedBox.shrink(),
+                                              items: const [
+                                                DropdownMenuItem(
+                                                  value: 's',
+                                                  child: Text('s'),
+                                                ),
+                                                DropdownMenuItem(
+                                                  value: 'm',
+                                                  child: Text('m'),
+                                                ),
+                                              ],
+                                              onChanged: _saving
+                                                  ? null
+                                                  : (v) {
+                                                      if (v == null) return;
+                                                      setState(() {
+                                                        _brewTimeUnit = v;
+                                                      });
+                                                    },
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        '冲煮备注',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: secondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _brewNoteController,
+                                        enabled: !_saving,
+                                        minLines: 3,
+                                        maxLines: 6,
+                                        decoration: _filledInputDecoration(
+                                          cardColor: cardColor,
+                                          isDark: isDark,
+                                          hintText: '冲煮技巧，观察记录…',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
                     ),
                     _sectionTitle('咖啡类型'),
                     Wrap(
