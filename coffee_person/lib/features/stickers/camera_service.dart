@@ -6,7 +6,8 @@ class CameraService {
   Future<XFile?> pickFromCamera() {
     return _picker.pickImage(
       source: ImageSource.camera,
-      maxWidth: 2048,
+      maxWidth: 1024,  // 降低分辨率以提升处理速度
+      imageQuality: 85,
     );
   }
 

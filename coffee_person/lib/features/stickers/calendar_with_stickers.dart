@@ -72,14 +72,17 @@ class CalendarWithStickers extends StatelessWidget {
     bool isToday, {
     bool isOutside = false,
   }) {
-    final background = selected ? accent.withAlpha(210) : tileColor;
-    final border = !selected && isToday
-        ? Border.all(color: accent.withAlpha(120), width: 1.2)
-        : null;
-    final textColor = selected ? Colors.white : primary;
     final stickerKey = formatDateKey(day);
     final stickers = stickersByDate[stickerKey] ?? const [];
-    final preview = stickers.take(3).toList();
+    final hasSticker = stickers.isNotEmpty;
+    
+    // 如果有贴纸，背景使用贴纸填充；否则使用默认背景
+    final background = hasSticker ? Colors.transparent : (selected ? accent.withAlpha(210) : tileColor);
+    final border = !selected && isToday
+        ? Border.all(color: accent.withAlpha(120), width: 1.2)
+        : (selected && hasSticker ? Border.all(color: accent, width: 2.5) : null);
+    final textColor = hasSticker ? Colors.white : (selected ? Colors.white : primary);
+    
     return Opacity(
       opacity: isOutside ? 0.3 : 1,
       child: Container(
@@ -88,12 +91,24 @@ class CalendarWithStickers extends StatelessWidget {
           borderRadius: BorderRadius.circular(18),
           border: border,
         ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final size = constraints.biggest.shortestSide;
-            final stickerSize = (size * 0.62).clamp(22.0, 40.0);
-            return Stack(
-              children: [
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // 贴纸作为背景填充整个格子
+              if (hasSticker)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => onStickerTap?.call(stickers.first),
+                  onLongPress: () => onStickerLongPress?.call(stickers.first),
+                  child: StickerView(
+                    path: stickers.first.path,
+                    size: double.infinity,
+                    fit: BoxFit.cover, // 填充整个格子
+                  ),
+                ),
+              if (!hasSticker)
                 Center(
                   child: Text(
                     '${day.day}',
@@ -104,36 +119,8 @@ class CalendarWithStickers extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (preview.isNotEmpty)
-                  Center(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.translucent,
-                      onTap: () => onStickerTap?.call(preview.first),
-                      onLongPress: () =>
-                          onStickerLongPress?.call(preview.first),
-                      child: SizedBox(
-                        width: stickerSize + 24,
-                        height: stickerSize + 18,
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          alignment: Alignment.center,
-                          children: [
-                            for (var i = 0; i < preview.length; i++)
-                              Transform.translate(
-                                offset: Offset(-i * 12.0, i * 6.0),
-                                child: StickerView(
-                                  path: preview[i].path,
-                                  size: stickerSize,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            );
-          },
+            ],
+          ),
         ),
       ),
     );

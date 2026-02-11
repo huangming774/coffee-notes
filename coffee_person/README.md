@@ -86,7 +86,7 @@ flutter run -d emulator-5554
 
 ## 开源许可
 
-项目基于 Flutter 构建，并使用了若干开源依赖（例如 isar、shared_preferences、image_picker、google_mlkit_text_recognition、geolocator 等）。
+项目基于 Flutter 构建，并使用了若干开源依赖（例如 isar、shared_preferences、image_picker、dio、archive、permission_handler、google_mlkit_text_recognition、geolocator 等）。
 你可以在应用内「设置 → 开源许可」查看完整许可列表。
 
 ## 你可以从这里开始

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
+import 'package:image/image.dart' as img;
 
 import 'detection_service.dart';
 import 'sticker_models.dart';
@@ -40,11 +41,12 @@ class StickerStore extends ChangeNotifier {
       await storageService.deleteStickerFile(item.path);
     }
     final id = 'sticker_${DateTime.now().millisecondsSinceEpoch}';
-    final bbox = await detectionService.detectFirstBoundingBox(imagePath);
+    final cutout = await detectionService.detectStickerCutout(imagePath);
     final lowSticker = await storageService.createLowQualitySticker(
       imagePath: imagePath,
       dateKey: dateKey,
-      bbox: bbox,
+      bbox: cutout.bbox,
+      alphaMask: cutout.alphaMask,
       id: id,
     );
     _insertSticker(lowSticker);
@@ -53,7 +55,8 @@ class StickerStore extends ChangeNotifier {
     unawaited(_upgradeStickerQuality(
       dateKey: dateKey,
       imagePath: imagePath,
-      bbox: bbox,
+      bbox: cutout.bbox,
+      alphaMask: cutout.alphaMask,
       id: id,
     ));
   }
@@ -62,12 +65,14 @@ class StickerStore extends ChangeNotifier {
     required String dateKey,
     required String imagePath,
     required Rect? bbox,
+    required img.Image? alphaMask,
     required String id,
   }) async {
     final updated = await storageService.processHighQualitySticker(
       imagePath: imagePath,
       dateKey: dateKey,
       bbox: bbox,
+      alphaMask: alphaMask,
       id: id,
     );
     final list = _stickersByDate[dateKey];

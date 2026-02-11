@@ -2682,7 +2682,7 @@ class _SettingsPageState extends State<SettingsPage> {
   static const String _openAiApiKeyKey = 'openai_api_key';
   static const String _openAiBaseUrlKey = 'openai_base_url';
   static const String _openAiModelKey = 'openai_model';
-  static const String _useMlKitDetectionKey = DetectionService.useMlKitKey;
+  static const String _useMlKitDetectionKey = 'use_mlkit_detection';
   static const String _githubRepoUrl =
       'https://github.com/huangming774/coffee-notes';
 
@@ -3419,7 +3419,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _saveDetectionEngine(bool useMlKit) async {
-    await DetectionService.saveUseMlKit(useMlKit);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_useMlKitDetectionKey, useMlKit);
   }
 
   Future<void> _loadAiConfig() async {
