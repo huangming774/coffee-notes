@@ -19,6 +19,11 @@ import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 优化图片缓存配置
+  PaintingBinding.instance.imageCache.maximumSize = 100; // 最多缓存100张图片
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 50 << 20; // 50MB内存限制
+
   final dir = await getApplicationDocumentsDirectory();
   final isar = await Isar.open([CoffeeRecordSchema, CoffeeDiaryEntrySchema],
       directory: dir.path);

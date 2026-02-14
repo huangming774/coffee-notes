@@ -6,6 +6,8 @@ import 'dart:ui';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
+import 'detection_config.dart';
+
 class StickerCutout {
   const StickerCutout({required this.bbox, required this.alphaMask});
 
@@ -42,13 +44,13 @@ class YoloDetectionService {
   static const String _modelAssetPath =
       'assets/models/yolov8n-seg_float16.tflite';
   static const int _fallbackInputSize = 320;
-  static const double _scoreThreshold = 0.15; // 降低阈值以提高检测率
+  double _scoreThreshold = 0.15;
 
-  final Set<int> _targetClassIds = {39, 40, 41, 45}; // bottle, wine glass, cup, bowl
-  int _threads = 4;  // 增加到 4 线程以提升性能
+  Set<int> _targetClassIds = {39, 40, 41, 45}; // bottle, wine glass, cup, bowl
+  bool _enableAllClasses = false;
+  int _threads = 4; // 增加到 线程以提升性能
   Interpreter? _interpreter;
   Future<void>? _loadingInterpreter;
-
   Future<Rect?> detect(File image) async {
     final cutout = await detectCutout(image);
     return cutout.bbox;
@@ -78,6 +80,7 @@ class YoloDetectionService {
       if (inputBuffer == null) {
         return const StickerCutout(bbox: null, alphaMask: null);
       }
+      await _loadDetectionConfig();
       final inputShape = inputTensor.shape;
       final outputTensors = _resolveOutputTensors(interpreter);
       if (outputTensors.isEmpty) {
@@ -170,6 +173,12 @@ class YoloDetectionService {
     _loadingInterpreter = loading;
     await loading;
     _loadingInterpreter = null;
+  }
+
+  Future<void> _loadDetectionConfig() async {
+    _scoreThreshold = await DetectionConfig.getScoreThreshold();
+    _targetClassIds = await DetectionConfig.getTargetClassIds();
+    _enableAllClasses = await DetectionConfig.isEnableAllClasses();
   }
 
   Future<void> _loadInterpreter() async {
@@ -289,26 +298,25 @@ class YoloDetectionService {
     );
     final padX = ((inputWidth - newW) / 2).floor();
     final padY = ((inputHeight - newH) / 2).floor();
+    
+    // 优化：使用 fill 填充背景色，然后复制图像
     final padded = img.Image(
       width: inputWidth,
       height: inputHeight,
       numChannels: 3,
     );
-    for (var y = 0; y < padded.height; y++) {
-      for (var x = 0; x < padded.width; x++) {
-        padded.setPixelRgba(x, y, 114, 114, 114, 255);
-      }
-    }
-    for (var y = 0; y < resized.height; y++) {
-      final dstY = y + padY;
-      if (dstY < 0 || dstY >= padded.height) continue;
-      for (var x = 0; x < resized.width; x++) {
-        final dstX = x + padX;
-        if (dstX < 0 || dstX >= padded.width) continue;
-        final p = resized.getPixel(x, y);
-        padded.setPixelRgba(dstX, dstY, p.r, p.g, p.b, 255);
-      }
-    }
+    
+    // 使用 fill 方法填充背景（比双层循环快很多）
+    img.fill(padded, color: img.ColorRgb8(114, 114, 114));
+    
+    // 使用 compositeImage 复制图像（比逐像素复制快）
+    img.compositeImage(
+      padded,
+      resized,
+      dstX: padX,
+      dstY: padY,
+    );
+    
     return _LetterboxResult(
       image: padded,
       scale: scale,
@@ -332,15 +340,13 @@ class YoloDetectionService {
     int? protoIndex;
     for (final entry in outputTensors.entries) {
       final shape = entry.value.shape;
-      if (shape.length == 3 && shape.any((dim) => dim >= 6)) {
-        detIndex = entry.key;
+      final maskDim = _inferMaskDim(shape);
+      if (maskDim != null && (shape.length == 4 || shape.length == 3)) {
+        protoIndex = entry.key;
         continue;
       }
-      if (shape.length == 4 || shape.length == 3) {
-        final maskDim = _inferMaskDim(shape);
-        if (maskDim != null) {
-          protoIndex = entry.key;
-        }
+      if (shape.length == 3 && shape.any((dim) => dim >= 6)) {
+        detIndex = entry.key;
       }
     }
     if (protoIndex == detIndex) {
@@ -360,7 +366,7 @@ class YoloDetectionService {
     int? maskDim,
     _LetterboxResult letterbox,
   ) {
-    final data = outputBuffer;
+    var data = outputBuffer;
     final params = outputTensor.params;
     final scale = params.scale;
     final zeroPoint = params.zeroPoint;
@@ -369,31 +375,36 @@ class YoloDetectionService {
     if (layout == null) return null;
     final rowCount = layout.rowCount;
     final colCount = layout.colCount;
+    var isNbyC = layout.isNbyC;
+    if (!isNbyC) {
+      data = _transposeOutputBuffer(data, rowCount, colCount);
+      isNbyC = true;
+    }
     for (var i = 0; i < rowCount; i++) {
       final cx = _readOutputValue(
         data,
-        _indexAt(i, 0, rowCount, colCount, layout.isNbyC),
+        _indexAt(i, 0, rowCount, colCount, isNbyC),
         outputTensor.type,
         scale,
         zeroPoint,
       );
       final cy = _readOutputValue(
         data,
-        _indexAt(i, 1, rowCount, colCount, layout.isNbyC),
+        _indexAt(i, 1, rowCount, colCount, isNbyC),
         outputTensor.type,
         scale,
         zeroPoint,
       );
       final w = _readOutputValue(
         data,
-        _indexAt(i, 2, rowCount, colCount, layout.isNbyC),
+        _indexAt(i, 2, rowCount, colCount, isNbyC),
         outputTensor.type,
         scale,
         zeroPoint,
       );
       final h = _readOutputValue(
         data,
-        _indexAt(i, 3, rowCount, colCount, layout.isNbyC),
+        _indexAt(i, 3, rowCount, colCount, isNbyC),
         outputTensor.type,
         scale,
         zeroPoint,
@@ -403,7 +414,7 @@ class YoloDetectionService {
         i,
         rowCount,
         colCount,
-        layout.isNbyC,
+        isNbyC,
         outputTensor.type,
         scale,
         zeroPoint,
@@ -414,7 +425,9 @@ class YoloDetectionService {
       final classCount =
           maskDim != null ? colCount - maskDim - 4 : colCount - 5;
       // 如果是多类别模型，只保留目标类别
-      if (classCount > 1 && !_targetClassIds.contains(parsed.classId)) {
+      if (classCount > 1 &&
+          !_enableAllClasses &&
+          !_targetClassIds.contains(parsed.classId)) {
         continue;
       }
       final normalized = cx <= 1.5 && cy <= 1.5 && w <= 1.5 && h <= 1.5;
@@ -433,13 +446,18 @@ class YoloDetectionService {
         bottom.clamp(0, originalHeight),
       );
       Float32List? maskCoefficients;
-      if (maskDim != null && colCount > maskDim) {
-        final coeffStart = colCount - maskDim;
+      if (maskDim != null && parsed.coeffStart >= 0) {
         final coeffs = Float32List(maskDim);
         for (var m = 0; m < maskDim; m++) {
           coeffs[m] = _readOutputValue(
             data,
-            _indexAt(i, coeffStart + m, rowCount, colCount, layout.isNbyC),
+            _indexAt(
+              i,
+              parsed.coeffStart + m,
+              rowCount,
+              colCount,
+              isNbyC,
+            ),
             outputTensor.type,
             scale,
             zeroPoint,
@@ -483,6 +501,53 @@ class YoloDetectionService {
     }
   }
 
+  List _transposeOutputBuffer(List data, int rowCount, int colCount) {
+    final size = rowCount * colCount;
+    if (data is Float32List) {
+      final out = Float32List(size);
+      for (var r = 0; r < rowCount; r++) {
+        for (var c = 0; c < colCount; c++) {
+          out[r * colCount + c] = data[c * rowCount + r];
+        }
+      }
+      return out;
+    }
+    if (data is Int8List) {
+      final out = Int8List(size);
+      for (var r = 0; r < rowCount; r++) {
+        for (var c = 0; c < colCount; c++) {
+          out[r * colCount + c] = data[c * rowCount + r];
+        }
+      }
+      return out;
+    }
+    if (data is Uint8List) {
+      final out = Uint8List(size);
+      for (var r = 0; r < rowCount; r++) {
+        for (var c = 0; c < colCount; c++) {
+          out[r * colCount + c] = data[c * rowCount + r];
+        }
+      }
+      return out;
+    }
+    if (data is Uint16List) {
+      final out = Uint16List(size);
+      for (var r = 0; r < rowCount; r++) {
+        for (var c = 0; c < colCount; c++) {
+          out[r * colCount + c] = data[c * rowCount + r];
+        }
+      }
+      return out;
+    }
+    final out = List<num>.filled(size, 0);
+    for (var r = 0; r < rowCount; r++) {
+      for (var c = 0; c < colCount; c++) {
+        out[r * colCount + c] = data[c * rowCount + r] as num;
+      }
+    }
+    return out;
+  }
+
   _OutputLayout? _resolveOutputLayout(List<int> outputShape) {
     if (outputShape.length == 3) {
       final dim1 = outputShape[1];
@@ -518,8 +583,10 @@ class YoloDetectionService {
     int? maskDim,
   ) {
     if (maskDim != null) {
+      const classStart = 4;
       final classEnd = colCount - maskDim;
-      if (classEnd > 4) {
+      if (classEnd > classStart) {
+        const objScore = 1.0;
         return _readClassScores(
           data,
           row,
@@ -529,11 +596,13 @@ class YoloDetectionService {
           type,
           scale,
           zeroPoint,
-          4,
+          classStart,
           classEnd,
-          1.0,
+          objScore,
+          coeffStart: classEnd,
         );
       }
+      return null;
     }
     if (colCount == 6) {
       final score = _sigmoid(_readOutputValue(
@@ -550,7 +619,11 @@ class YoloDetectionService {
         scale,
         zeroPoint,
       );
-      return _ScoreClass(score: score, classId: classIdValue.round());
+      return _ScoreClass(
+        score: score,
+        classId: classIdValue.round(),
+        coeffStart: -1,
+      );
     }
     final hasObj = colCount == 85 || (colCount - 5 == 80 && colCount > 6);
     final classStart = hasObj ? 5 : 4;
@@ -575,6 +648,7 @@ class YoloDetectionService {
       classStart,
       colCount,
       objScore,
+      coeffStart: -1,
     );
   }
 
@@ -589,8 +663,9 @@ class YoloDetectionService {
     int zeroPoint,
     int classStart,
     int classEnd,
-    double objScore,
-  ) {
+    double objScore, {
+    required int coeffStart,
+  }) {
     var bestProb = 0.0;
     var bestClass = -1;
     for (var c = classStart; c < classEnd; c++) {
@@ -607,7 +682,11 @@ class YoloDetectionService {
       }
     }
     if (bestClass < 0) return null;
-    return _ScoreClass(score: objScore * bestProb, classId: bestClass);
+    return _ScoreClass(
+      score: objScore * bestProb,
+      classId: bestClass,
+      coeffStart: coeffStart,
+    );
   }
 
   int _resolveInputHeight(List<int> inputShape) {
@@ -631,16 +710,11 @@ class YoloDetectionService {
   }
 
   int? _inferMaskDim(List<int> protoShape) {
-    if (protoShape.length == 4) {
-      final candidates = <int>[
-        protoShape[1],
-        protoShape[2],
-        protoShape[3],
-      ];
-      candidates.sort();
-      for (final value in candidates) {
-        if (value > 0 && value <= 64) return value;
-      }
+    if (protoShape.isEmpty) return null;
+    final candidates = List<int>.from(protoShape);
+    candidates.sort();
+    for (final value in candidates) {
+      if (value > 1 && value <= 64) return value;
     }
     return null;
   }
@@ -912,8 +986,13 @@ class _OutputLayout {
 }
 
 class _ScoreClass {
-  const _ScoreClass({required this.score, required this.classId});
+  const _ScoreClass({
+    required this.score,
+    required this.classId,
+    required this.coeffStart,
+  });
 
   final double score;
   final int classId;
+  final int coeffStart;
 }

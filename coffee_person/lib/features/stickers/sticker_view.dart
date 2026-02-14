@@ -16,13 +16,23 @@ class StickerView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final file = File(path);
+    final isFull = size == double.infinity;
+    if (!file.existsSync()) {
+      return SizedBox(
+        width: isFull ? double.infinity : size,
+        height: isFull ? double.infinity : size,
+      );
+    }
     if (size == double.infinity) {
-      // 填充整个容器
       return Image.file(
-        File(path),
+        file,
         fit: fit,
         width: double.infinity,
         height: double.infinity,
+        cacheWidth: 800, // 限制缓存尺寸，节省内存
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        gaplessPlayback: true, // 平滑切换
       );
     }
     
@@ -30,8 +40,11 @@ class StickerView extends StatelessWidget {
       width: size,
       height: size,
       child: Image.file(
-        File(path),
+        file,
         fit: fit,
+        cacheWidth: (size * 2).toInt(), // 2倍像素密度
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        gaplessPlayback: true,
       ),
     );
   }

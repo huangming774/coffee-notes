@@ -27,8 +27,10 @@ class DayDetailSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primary = isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
-    final secondary = isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    final secondary =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
     final cardColor = isDark ? AppTheme.darkCard : Colors.white;
     final accent = AppTheme.accentOf(context);
 
@@ -58,11 +60,11 @@ class DayDetailSheet extends StatelessWidget {
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: secondary.withOpacity(0.3),
+                color: secondary.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            
+
             // 日期标题
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
@@ -95,13 +97,15 @@ class DayDetailSheet extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
                 decoration: BoxDecoration(
                   color: cardColor,
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(isDark ? 0.3 : 0.08),
+                      color:
+                          Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
                       blurRadius: 20,
                       offset: const Offset(0, 8),
                     ),
@@ -119,7 +123,7 @@ class DayDetailSheet extends StatelessWidget {
                     Container(
                       width: 1,
                       height: 40,
-                      color: secondary.withOpacity(0.2),
+                      color: secondary.withValues(alpha: 0.2),
                     ),
                     _StatItem(
                       value: '$totalCaffeine',
@@ -130,7 +134,7 @@ class DayDetailSheet extends StatelessWidget {
                     Container(
                       width: 1,
                       height: 40,
-                      color: secondary.withOpacity(0.2),
+                      color: secondary.withValues(alpha: 0.2),
                     ),
                     _StatItem(
                       value: '$totalSugar',
@@ -303,7 +307,7 @@ class _RecordItem extends StatelessWidget {
     final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
     final timeStr = '$displayHour:${minute.toString().padLeft(2, '0')}';
     final cupSize = record.cupSize ?? '中杯';
-    
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Material(
@@ -317,7 +321,8 @@ class _RecordItem extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: (isDark ? Colors.white : Colors.black).withOpacity(0.08),
+                color: (isDark ? Colors.white : Colors.black)
+                    .withValues(alpha: 0.08),
               ),
             ),
             child: Row(
@@ -329,7 +334,8 @@ class _RecordItem extends StatelessWidget {
                     height: 60,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(12),
-                      color: (isDark ? Colors.white : Colors.black).withOpacity(0.05),
+                      color: (isDark ? Colors.white : Colors.black)
+                          .withValues(alpha: 0.05),
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(12),
@@ -345,7 +351,7 @@ class _RecordItem extends StatelessWidget {
                     height: 60,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(12),
-                      color: AppTheme.accentOf(context).withOpacity(0.1),
+                      color: AppTheme.accentOf(context).withValues(alpha: 0.1),
                     ),
                     child: Icon(
                       Icons.coffee,
@@ -353,9 +359,9 @@ class _RecordItem extends StatelessWidget {
                       size: 28,
                     ),
                   ),
-                
+
                 const SizedBox(width: 16),
-                
+
                 // 咖啡信息
                 Expanded(
                   child: Column(
@@ -378,7 +384,8 @@ class _RecordItem extends StatelessWidget {
                               vertical: 2,
                             ),
                             decoration: BoxDecoration(
-                              color: AppTheme.accentOf(context).withOpacity(0.1),
+                              color: AppTheme.accentOf(context)
+                                  .withValues(alpha: 0.1),
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
@@ -404,7 +411,7 @@ class _RecordItem extends StatelessWidget {
                     ],
                   ),
                 ),
-                
+
                 // 咖啡因含量
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,

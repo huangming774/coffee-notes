@@ -19,21 +19,33 @@ class WeatherService {
   static const String _sourceKey = 'weather_source';
   static const String _owmApiKeyKey = 'owm_api_key';
 
+  // 内存缓存，避免频繁读取 SharedPreferences
+  WeatherSource? _cachedSource;
+  String? _cachedOwmApiKey;
+
   WeatherSource get source {
+    if (_cachedSource != null) return _cachedSource!;
     final val = _prefs.getString(_sourceKey);
-    return WeatherSource.values.firstWhere(
+    _cachedSource = WeatherSource.values.firstWhere(
       (e) => e.name == val,
       orElse: () => WeatherSource.openMeteo,
     );
+    return _cachedSource!;
   }
 
   Future<void> setSource(WeatherSource source) async {
+    _cachedSource = source;
     await _prefs.setString(_sourceKey, source.name);
   }
 
-  String get owmApiKey => _prefs.getString(_owmApiKeyKey) ?? '';
+  String get owmApiKey {
+    if (_cachedOwmApiKey != null) return _cachedOwmApiKey!;
+    _cachedOwmApiKey = _prefs.getString(_owmApiKeyKey) ?? '';
+    return _cachedOwmApiKey!;
+  }
 
   Future<void> setOwmApiKey(String key) async {
+    _cachedOwmApiKey = key;
     await _prefs.setString(_owmApiKeyKey, key);
   }
 

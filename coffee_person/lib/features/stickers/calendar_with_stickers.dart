@@ -85,41 +85,43 @@ class CalendarWithStickers extends StatelessWidget {
     
     return Opacity(
       opacity: isOutside ? 0.3 : 1,
-      child: Container(
-        decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(18),
-          border: border,
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(18),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // 贴纸作为背景填充整个格子
-              if (hasSticker)
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => onStickerTap?.call(stickers.first),
-                  onLongPress: () => onStickerLongPress?.call(stickers.first),
-                  child: StickerView(
-                    path: stickers.first.path,
-                    size: double.infinity,
-                    fit: BoxFit.cover, // 填充整个格子
-                  ),
-                ),
-              if (!hasSticker)
-                Center(
-                  child: Text(
-                    '${day.day}',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: textColor,
+      child: RepaintBoundary( // 隔离重绘，提升性能
+        child: Container(
+          decoration: BoxDecoration(
+            color: background,
+            borderRadius: BorderRadius.circular(18),
+            border: border,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // 贴纸作为背景填充整个格子
+                if (hasSticker)
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => onStickerTap?.call(stickers.first),
+                    onLongPress: () => onStickerLongPress?.call(stickers.first),
+                    child: StickerView(
+                      path: stickers.first.path,
+                      size: double.infinity,
+                      fit: BoxFit.cover, // 填充整个格子
                     ),
                   ),
-                ),
-            ],
+                if (!hasSticker)
+                  Center(
+                    child: Text(
+                      '${day.day}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

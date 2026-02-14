@@ -6,48 +6,66 @@ class DetectionConfig {
   static const String _targetClassIdsKey = 'yolo_target_class_ids';
   static const String _enableAllClassesKey = 'yolo_enable_all_classes';
 
+  // 内存缓存，避免频繁读取 SharedPreferences
+  static double? _cachedScoreThreshold;
+  static Set<int>? _cachedTargetClassIds;
+  static bool? _cachedEnableAllClasses;
+
   /// 获取检测阈值（默认 0.15）
   static Future<double> getScoreThreshold() async {
+    if (_cachedScoreThreshold != null) return _cachedScoreThreshold!;
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getDouble(_scoreThresholdKey) ?? 0.15;
+    _cachedScoreThreshold = prefs.getDouble(_scoreThresholdKey) ?? 0.15;
+    return _cachedScoreThreshold!;
   }
 
   /// 设置检测阈值
   static Future<void> setScoreThreshold(double value) async {
+    _cachedScoreThreshold = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_scoreThresholdKey, value);
   }
 
   /// 获取目标类别 ID 列表（默认 [41] - 杯子）
   static Future<Set<int>> getTargetClassIds() async {
+    if (_cachedTargetClassIds != null) return _cachedTargetClassIds!;
     final prefs = await SharedPreferences.getInstance();
     final list = prefs.getStringList(_targetClassIdsKey);
     if (list == null || list.isEmpty) {
-      return {41}; // COCO 数据集中的 cup
+      _cachedTargetClassIds = {41}; // COCO 数据集中的 cup
+    } else {
+      _cachedTargetClassIds = list.map((s) => int.tryParse(s) ?? 41).toSet();
     }
-    return list.map((s) => int.tryParse(s) ?? 41).toSet();
+    return _cachedTargetClassIds!;
   }
 
   /// 设置目标类别 ID 列表
   static Future<void> setTargetClassIds(Set<int> ids) async {
+    _cachedTargetClassIds = ids;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_targetClassIdsKey, ids.map((i) => i.toString()).toList());
   }
 
   /// 是否启用所有类别检测（调试用）
   static Future<bool> isEnableAllClasses() async {
+    if (_cachedEnableAllClasses != null) return _cachedEnableAllClasses!;
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_enableAllClassesKey) ?? false;
+    _cachedEnableAllClasses = prefs.getBool(_enableAllClassesKey) ?? false;
+    return _cachedEnableAllClasses!;
   }
 
   /// 设置是否启用所有类别检测
   static Future<void> setEnableAllClasses(bool value) async {
+    _cachedEnableAllClasses = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_enableAllClassesKey, value);
   }
 
   /// 重置为默认配置
   static Future<void> resetToDefaults() async {
+    _cachedScoreThreshold = null;
+    _cachedTargetClassIds = null;
+    _cachedEnableAllClasses = null;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_scoreThresholdKey);
     await prefs.remove(_targetClassIdsKey);

@@ -5,33 +5,32 @@ import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:extended_image/extended_image.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
 import 'package:isar/isar.dart';
-import 'package:motion_photos/motion_photos.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:photo_manager/photo_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../data/coffee_record.dart';
 
 import '../../data/coffee_diary_entry.dart';
 import '../../data/coffee_diary_repository.dart';
 import '../../data/coffee_repository.dart';
-import '../../features/diary/asset_picker_page.dart';
 import '../../features/stickers/calendar_with_stickers.dart';
 import '../../features/stickers/camera_service.dart';
-import '../../features/stickers/detection_service.dart';
 import '../../features/stickers/sticker_models.dart';
 import '../../features/stickers/sticker_store.dart';
-import '../../features/stickers/sticker_view.dart';
+import '../../features/stats/day_detail_sheet.dart';
 import '../../features/widgets/coffee_home_widget.dart';
 import '../../features/weather/weather_client.dart';
 import '../../features/weather/weather_service.dart';
@@ -125,11 +124,18 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
   }
 
   Future<void> _pickAnchorDate() async {
-    final picked = await showDatePicker(
+    final maxDate = DateTime(2050, 12, 31);
+    final picked = await showModalBottomSheet<DateTime>(
       context: context,
-      initialDate: _anchorDate,
-      firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      builder: (context) {
+        return _YearMonthPickerSheet(
+          initialDate: _anchorDate,
+          minYear: 2000,
+          maxDate: maxDate,
+        );
+      },
     );
     if (picked == null) return;
     setState(() {
@@ -152,6 +158,10 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
     if (parsed == null) return null;
     if (!(parsed.scheme == 'http' || parsed.scheme == 'https')) return null;
     if (parsed.host.isEmpty) return null;
+    final segments = parsed.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.isEmpty) {
+      return parsed.replace(pathSegments: ['v1']);
+    }
     return parsed;
   }
 
@@ -438,21 +448,27 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
                       ],
                     ),
                     const SizedBox(height: 10),
-                    SizedBox(
-                      height: min(
-                        340.0,
-                        MediaQuery.sizeOf(context).height * 0.42,
-                      ),
+                    Flexible(
                       child: Container(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+                        ),
                         width: double.infinity,
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
                           color: cardColor,
-                          borderRadius: BorderRadius.circular(18),
+                          borderRadius: BorderRadius.circular(20),
                           border: Border.all(
                             color: (isDark ? Colors.white : Colors.black)
-                                .withAlpha(10),
+                                .withAlpha(12),
                           ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withAlpha(isDark ? 40 : 8),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
                         ),
                         child: FutureBuilder<String>(
                           future: future,
@@ -460,25 +476,27 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
                             if (snapshot.connectionState ==
                                 ConnectionState.waiting) {
                               return Center(
-                                child: Row(
+                                child: Column(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     SizedBox(
-                                      width: 18,
-                                      height: 18,
+                                      width: 32,
+                                      height: 32,
                                       child: CircularProgressIndicator(
-                                        strokeWidth: 2.2,
+                                        strokeWidth: 3,
                                         valueColor:
                                             AlwaysStoppedAnimation<Color>(
                                           AppTheme.accentOf(context),
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(width: 10),
+                                    const SizedBox(height: 16),
                                     Text(
-                                      '分析中…',
-                                      style: textTheme.bodyMedium
-                                          ?.copyWith(color: secondary),
+                                      '正在分析您的咖啡因摄入数据…',
+                                      style: textTheme.bodyMedium?.copyWith(
+                                        color: secondary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -489,14 +507,95 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
                                 : (snapshot.data ?? '').trim();
                             final display = text.isEmpty ? '暂无结果' : text;
                             return Scrollbar(
+                              thumbVisibility: true,
                               child: SingleChildScrollView(
-                                child: SelectableText(
-                                  display,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    height: 1.35,
-                                    color:
-                                        snapshot.hasError ? secondary : primary,
+                                padding: const EdgeInsets.only(right: 8),
+                                child: MarkdownBody(
+                                  data: display,
+                                  selectable: true,
+                                  styleSheet: MarkdownStyleSheet.fromTheme(
+                                    Theme.of(context),
+                                  ).copyWith(
+                                    p: TextStyle(
+                                      fontSize: 14,
+                                      height: 1.6,
+                                      color: snapshot.hasError
+                                          ? secondary
+                                          : primary,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                    h1: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w800,
+                                      color: snapshot.hasError
+                                          ? secondary
+                                          : primary,
+                                      height: 1.4,
+                                    ),
+                                    h2: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                      color: snapshot.hasError
+                                          ? secondary
+                                          : primary,
+                                      height: 1.4,
+                                    ),
+                                    h3: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                      color: snapshot.hasError
+                                          ? secondary
+                                          : primary,
+                                      height: 1.4,
+                                    ),
+                                    h1Padding: const EdgeInsets.only(
+                                        top: 16, bottom: 8),
+                                    h2Padding: const EdgeInsets.only(
+                                        top: 14, bottom: 6),
+                                    h3Padding: const EdgeInsets.only(
+                                        top: 12, bottom: 4),
+                                    listIndent: 24,
+                                    listBullet: TextStyle(
+                                      fontSize: 14,
+                                      color: AppTheme.accentOf(context),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                    code: TextStyle(
+                                      fontSize: 13,
+                                      color: snapshot.hasError
+                                          ? secondary
+                                          : primary,
+                                      backgroundColor:
+                                          (isDark ? Colors.white : Colors.black)
+                                              .withAlpha(8),
+                                      fontFamily: 'monospace',
+                                    ),
+                                    codeblockDecoration: BoxDecoration(
+                                      color:
+                                          (isDark ? Colors.white : Colors.black)
+                                              .withAlpha(8),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    codeblockPadding: const EdgeInsets.all(12),
+                                    blockquote: TextStyle(
+                                      fontSize: 14,
+                                      height: 1.6,
+                                      color: snapshot.hasError
+                                          ? secondary
+                                          : secondary,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                    blockquoteDecoration: BoxDecoration(
+                                      border: Border(
+                                        left: BorderSide(
+                                          color: AppTheme.accentOf(context)
+                                              .withAlpha(100),
+                                          width: 3,
+                                        ),
+                                      ),
+                                    ),
+                                    blockquotePadding: const EdgeInsets.only(
+                                        left: 12, top: 4, bottom: 4),
                                   ),
                                 ),
                               ),
@@ -708,14 +807,10 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
-                  child: FilledButton(
-                    onPressed: _showAiCaffeineAnalysisSheet,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppTheme.accentOf(context),
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size.fromHeight(48),
-                    ),
-                    child: const Text('AI 分析'),
+                  child: _LiquidGlassButton(
+                    onTap: _showAiCaffeineAnalysisSheet,
+                    label: 'AI 分析',
+                    icon: Icons.auto_awesome_outlined,
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -937,6 +1032,226 @@ class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
   }
 }
 
+class _YearMonthPickerSheet extends StatefulWidget {
+  const _YearMonthPickerSheet({
+    required this.initialDate,
+    required this.minYear,
+    required this.maxDate,
+  });
+
+  final DateTime initialDate;
+  final int minYear;
+  final DateTime maxDate;
+
+  @override
+  State<_YearMonthPickerSheet> createState() => _YearMonthPickerSheetState();
+}
+
+class _YearMonthPickerSheetState extends State<_YearMonthPickerSheet> {
+  late int _year;
+  late int _month;
+  late final FixedExtentScrollController _yearController;
+  late FixedExtentScrollController _monthController;
+
+  int get _maxYear => widget.maxDate.year;
+
+  List<int> get _years => List<int>.generate(
+        _maxYear - widget.minYear + 1,
+        (i) => widget.minYear + i,
+      );
+
+  List<int> _monthsForYear(int year) {
+    final maxMonth = year >= widget.maxDate.year ? widget.maxDate.month : 12;
+    return List<int>.generate(maxMonth, (i) => i + 1);
+  }
+
+  int _daysInMonth(int year, int month) {
+    return DateTime(year, month + 1, 0).day;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final initialYear = widget.initialDate.year.clamp(widget.minYear, _maxYear);
+    _year = initialYear;
+    final months = _monthsForYear(_year);
+    final initialMonth = widget.initialDate.month.clamp(1, months.last);
+    _month = initialMonth;
+    _yearController = FixedExtentScrollController(
+      initialItem: _years.indexOf(_year),
+    );
+    _monthController = FixedExtentScrollController(
+      initialItem: months.indexOf(_month),
+    );
+  }
+
+  @override
+  void dispose() {
+    _yearController.dispose();
+    _monthController.dispose();
+    super.dispose();
+  }
+
+  void _updateYear(int year) {
+    if (year == _year) return;
+    setState(() {
+      _year = year;
+    });
+    final months = _monthsForYear(_year);
+    final nextMonth = _month.clamp(1, months.last);
+    if (nextMonth != _month) {
+      setState(() {
+        _month = nextMonth;
+      });
+      final targetIndex = months.indexOf(_month);
+      _monthController.dispose();
+      _monthController = FixedExtentScrollController(initialItem: targetIndex);
+    }
+  }
+
+  void _confirm() {
+    var day = widget.initialDate.day;
+    day = min(day, _daysInMonth(_year, _month));
+    if (_year == widget.maxDate.year && _month == widget.maxDate.month) {
+      day = min(day, widget.maxDate.day);
+    }
+    final result = DateTime(_year, _month, day);
+    Navigator.of(context).pop(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    final secondary =
+        isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
+    final years = _years;
+    final months = _monthsForYear(_year);
+    return SafeArea(
+      top: false,
+      child: SizedBox(
+        height: 340,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: Row(
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '选择月份',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: primary,
+                    ),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: _confirm,
+                    child: const Text('确定'),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 6),
+                        Text(
+                          '年份',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: secondary,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Expanded(
+                          child: CupertinoPicker(
+                            scrollController: _yearController,
+                            itemExtent: 36,
+                            magnification: 1.06,
+                            useMagnifier: true,
+                            onSelectedItemChanged: (index) {
+                              _updateYear(years[index]);
+                            },
+                            children: [
+                              for (final y in years)
+                                Center(
+                                  child: Text(
+                                    '$y',
+                                    style: TextStyle(
+                                      color: primary,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 6),
+                        Text(
+                          '月份',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: secondary,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Expanded(
+                          child: CupertinoPicker(
+                            scrollController: _monthController,
+                            itemExtent: 36,
+                            magnification: 1.06,
+                            useMagnifier: true,
+                            onSelectedItemChanged: (index) {
+                              setState(() {
+                                _month = months[index];
+                              });
+                            },
+                            children: [
+                              for (final m in months)
+                                Center(
+                                  child: Text(
+                                    m.toString().padLeft(2, '0'),
+                                    style: TextStyle(
+                                      color: primary,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class CoffeePage extends StatefulWidget {
   const CoffeePage({
     super.key,
@@ -976,7 +1291,6 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
   final GlobalKey _sharePosterKey = GlobalKey();
   static const MethodChannel _shareChannel =
       MethodChannel('coffee_person/share');
-  final CameraService _cameraService = CameraService();
 
   @override
   void initState() {
@@ -1044,244 +1358,6 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
         date: _today,
       );
     }
-  }
-
-  Future<XFile?> _pickStickerImage(BuildContext context) async {
-    if (_monthLoading) return null;
-    return showModalBottomSheet<XFile?>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 44,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(20),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ListTile(
-                  leading: const Icon(Icons.photo_camera_outlined),
-                  title: const Text('拍照'),
-                  onTap: () async {
-                    final file = await _cameraService.pickFromCamera();
-                    if (!context.mounted) return;
-                    Navigator.of(context).pop(file);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.photo_library_outlined),
-                  title: const Text('从相册选择'),
-                  onTap: () async {
-                    final file = await _cameraService.pickFromGallery();
-                    if (!context.mounted) return;
-                    Navigator.of(context).pop(file);
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _addStickerForDay(DateTime date) async {
-    final picked = await _pickStickerImage(context);
-    if (picked == null) return;
-    final persisted = await persistPickedImage(picked);
-    if (!mounted) return;
-    await context.read<StickerStore>().addStickerFromImage(
-          date: date,
-          imagePath: persisted,
-        );
-  }
-
-  Future<void> _showStickerActionsForDay(DateTime date) async {
-    final dateKey = formatDateKey(date);
-    final stickers =
-        context.read<StickerStore>().stickersByDate[dateKey] ?? const [];
-    await showModalBottomSheet<void>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 44,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(20),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ListTile(
-                  leading: const Icon(Icons.add_a_photo_outlined),
-                  title: const Text('添加贴纸'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    _addStickerForDay(date);
-                  },
-                ),
-                if (stickers.isNotEmpty)
-                  ListTile(
-                    leading: const Icon(Icons.collections_outlined),
-                    title: const Text('查看贴纸'),
-                    subtitle: Text('${stickers.length} 张'),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      _openStickerList(date);
-                    },
-                  ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  void _openStickerViewer(String path) {
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        return Dialog(
-          insetPadding: const EdgeInsets.all(18),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: StickerView(path: path, size: 320),
-          ),
-        );
-      },
-    );
-  }
-
-  void _openStickerList(DateTime date) {
-    final dateKey = formatDateKey(date);
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        final store = context.watch<StickerStore>();
-        final stickers = store.stickersByDate[dateKey] ?? const [];
-        final primary = Theme.of(context).brightness == Brightness.dark
-            ? AppTheme.textPrimaryDark
-            : AppTheme.textPrimaryLight;
-        final secondary = Theme.of(context).brightness == Brightness.dark
-            ? AppTheme.textSecondaryDark
-            : AppTheme.textSecondaryLight;
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
-            child: SizedBox(
-              height: MediaQuery.of(context).size.height * 0.7,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 44,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withAlpha(20),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '${date.month}月${date.day}日 贴纸',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                            color: primary,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        '${stickers.length} 张',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: secondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  Expanded(
-                    child: stickers.isEmpty
-                        ? Center(
-                            child: Text(
-                              '暂无贴纸',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: secondary,
-                              ),
-                            ),
-                          )
-                        : GridView.builder(
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              crossAxisSpacing: 12,
-                              mainAxisSpacing: 12,
-                              childAspectRatio: 1,
-                            ),
-                            itemCount: stickers.length,
-                            itemBuilder: (context, index) {
-                              final sticker = stickers[index];
-                              return GestureDetector(
-                                onTap: () => _openStickerViewer(sticker.path),
-                                onLongPress: () async {
-                                  await context
-                                      .read<StickerStore>()
-                                      .removeSticker(
-                                        dateKey: dateKey,
-                                        stickerId: sticker.id,
-                                      );
-                                },
-                                child: StickerView(
-                                  path: sticker.path,
-                                  size: 110,
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
   }
 
   String _weatherDescription(int code) {
@@ -1600,6 +1676,62 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
     if (updated == true) {
       _loadMonth(_monthStart);
     }
+  }
+
+  DateTime _dateFromStickerKey(String dateKey) {
+    final parsed = DateTime.tryParse(dateKey);
+    if (parsed != null) {
+      return DateTime(parsed.year, parsed.month, parsed.day);
+    }
+    return _selectedDate;
+  }
+
+  Future<void> _openDayDetailSheet(DateTime day) async {
+    final dayStart = DateTime(day.year, day.month, day.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    final records = await widget.repository.getRecordsInRange(dayStart, dayEnd);
+    if (!mounted) return;
+    final stickers = context.read<StickerStore>().stickersForDate(dayStart);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return DayDetailSheet(
+          date: dayStart,
+          records: records,
+          stickers: stickers,
+          onAddCoffee: () async {
+            Navigator.of(context).pop();
+            final createdAt = DateTime(
+              dayStart.year,
+              dayStart.month,
+              dayStart.day,
+              DateTime.now().hour,
+              DateTime.now().minute,
+            );
+            final added = await Navigator.of(this.context).push<bool>(
+              _bottomUpRoute<bool>(
+                AddCoffeePage(
+                  repository: widget.repository,
+                  initialCreatedAt: createdAt,
+                ),
+              ),
+            );
+            if (added == true) {
+              _loadMonth(_monthStart);
+            }
+          },
+          onRecordTap: (record) async {
+            Navigator.of(context).pop();
+            await _openRecordEditor(record);
+          },
+        );
+      },
+    );
   }
 
   Future<void> _openDayRecords(DateTime day) async {
@@ -2089,7 +2221,6 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
                           focusedDay: _selectedDate,
                           selectedDay: _selectedDate,
                           onDaySelected: (day) {
-                            final isSame = _isSameDay(day, _selectedDate);
                             final nextMonthStart =
                                 DateTime(day.year, day.month, 1);
                             setState(() {
@@ -2099,12 +2230,20 @@ class _CoffeePageState extends State<CoffeePage> with WidgetsBindingObserver {
                               _monthStart = nextMonthStart;
                               _loadMonth(_monthStart);
                             }
-                            if (isSame) {
-                              _showStickerActionsForDay(day);
-                            }
                           },
-                          onStickerTap: (sticker) =>
-                              _openStickerViewer(sticker.path),
+                          onStickerTap: (sticker) {
+                            final day = _dateFromStickerKey(sticker.dateKey);
+                            final nextMonthStart =
+                                DateTime(day.year, day.month, 1);
+                            setState(() {
+                              _selectedDate = day;
+                            });
+                            if (!_isSameMonth(nextMonthStart, _monthStart)) {
+                              _monthStart = nextMonthStart;
+                              _loadMonth(_monthStart);
+                            }
+                            _openDayDetailSheet(day);
+                          },
                           onStickerLongPress: (sticker) =>
                               context.read<StickerStore>().removeSticker(
                                     dateKey: sticker.dateKey,
@@ -2682,14 +2821,12 @@ class _SettingsPageState extends State<SettingsPage> {
   static const String _openAiApiKeyKey = 'openai_api_key';
   static const String _openAiBaseUrlKey = 'openai_base_url';
   static const String _openAiModelKey = 'openai_model';
-  static const String _useMlKitDetectionKey = 'use_mlkit_detection';
   static const String _githubRepoUrl =
       'https://github.com/huangming774/coffee-notes';
 
   late AppAccentPalette _selectedPalette;
   late ThemeMode _selectedThemeMode;
   bool _aiTesting = false;
-  bool _useMlKitDetection = false;
   final TextEditingController _openAiApiKeyController = TextEditingController();
   final TextEditingController _openAiBaseUrlController = TextEditingController(
     text: 'https://api.openai.com/v1',
@@ -2705,7 +2842,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _selectedPalette = widget.accentPalette;
     _selectedThemeMode = widget.themeMode;
     _loadCaffeineLimit();
-    _loadDetectionEngine();
     _loadAiConfig();
     _loadWeatherConfig();
   }
@@ -2770,10 +2906,14 @@ class _SettingsPageState extends State<SettingsPage> {
       '这是我写的一个咖啡记录与统计工具，帮助你更直观地管理每天的咖啡摄入。',
       '',
       '主要功能：',
-      '• 记录咖啡：类型/咖啡因/糖/是否自制/备注/图片',
+      '• 记录咖啡：类型/咖啡因/糖/是否自制/备注/图片/时间',
+      '• 统计分析：周/月/年趋势、杯数与咖啡因热力图',
       '• 日历视图：查看当日记录与咖啡因进度',
-      '• 统计分析：周/月/年趋势与偏好统计',
+      '• 日历贴纸：从咖啡图片生成贴纸封面',
+      '• AI 分析：使用 OpenAI 兼容接口进行咖啡因分析',
       '• OCR 识别：拍照识别菜单与咖啡豆包装信息',
+      '• 咖啡日记：图文记录与视频支持',
+      '• 所在地天气：展示实时天气与温度',
       '',
       '感谢使用，希望你每天都喝到喜欢的那一杯。',
     ].join('\n');
@@ -2995,50 +3135,40 @@ class _SettingsPageState extends State<SettingsPage> {
                                 .withAlpha(10),
                           ),
                         ),
-                        child: Column(
-                          children: [
-                            RadioListTile<WeatherSource>(
-                              title: const Text('Open-Meteo'),
-                              subtitle: const Text('免费，无需 API Key'),
-                              value: WeatherSource.openMeteo,
-                              groupValue: _selectedWeatherSource,
-                              activeColor: AppTheme.accentOf(context),
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setSheetState(() {
-                                    _selectedWeatherSource = val;
-                                  });
-                                  setState(() {
-                                    _selectedWeatherSource = val;
-                                  });
-                                }
-                              },
-                            ),
-                            Divider(
-                              height: 1,
-                              indent: 16,
-                              endIndent: 16,
-                              color: (isDark ? Colors.white : Colors.black)
-                                  .withAlpha(10),
-                            ),
-                            RadioListTile<WeatherSource>(
-                              title: const Text('OpenWeatherMap'),
-                              subtitle: const Text('需配置 API Key'),
-                              value: WeatherSource.openWeatherMap,
-                              groupValue: _selectedWeatherSource,
-                              activeColor: AppTheme.accentOf(context),
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setSheetState(() {
-                                    _selectedWeatherSource = val;
-                                  });
-                                  setState(() {
-                                    _selectedWeatherSource = val;
-                                  });
-                                }
-                              },
-                            ),
-                          ],
+                        child: RadioGroup<WeatherSource>(
+                          groupValue: _selectedWeatherSource,
+                          onChanged: (val) {
+                            if (val == null) return;
+                            setSheetState(() {
+                              _selectedWeatherSource = val;
+                            });
+                            setState(() {
+                              _selectedWeatherSource = val;
+                            });
+                          },
+                          child: Column(
+                            children: [
+                              RadioListTile<WeatherSource>(
+                                title: const Text('Open-Meteo'),
+                                subtitle: const Text('免费，无需 API Key'),
+                                value: WeatherSource.openMeteo,
+                                activeColor: AppTheme.accentOf(context),
+                              ),
+                              Divider(
+                                height: 1,
+                                indent: 16,
+                                endIndent: 16,
+                                color: (isDark ? Colors.white : Colors.black)
+                                    .withAlpha(10),
+                              ),
+                              RadioListTile<WeatherSource>(
+                                title: const Text('OpenWeatherMap'),
+                                subtitle: const Text('需配置 API Key'),
+                                value: WeatherSource.openWeatherMap,
+                                activeColor: AppTheme.accentOf(context),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                       if (_selectedWeatherSource ==
@@ -3119,12 +3249,18 @@ class _SettingsPageState extends State<SettingsPage> {
       '• isar / isar_flutter_libs',
       '• path_provider',
       '• shared_preferences',
+      '• provider',
+      '• image / extended_image',
       '• image_picker / cross_file',
       '• photo_manager',
       '• motion_photos',
-      '• video_player',
       '• url_launcher',
+      '• table_calendar',
+      '• http',
+      '• geolocator',
       '• google_mlkit_text_recognition',
+      '• google_mlkit_object_detection',
+      '• tflite_flutter',
       '• flutter_displaymode',
       '',
       '你可以在下方打开系统的许可列表查看完整 License 文本。',
@@ -3301,18 +3437,24 @@ class _SettingsPageState extends State<SettingsPage> {
       '本应用不要求注册账号，不主动收集可用于识别你身份的个人信息。',
       '',
       '2. 本地存储',
-      '你添加的咖啡记录、设置项以及选择的图片路径等信息，会存储在你的设备本地，用于应用正常功能。',
+      '咖啡记录、日记内容、设置项、贴纸索引与媒体路径等信息，均存储在你的设备本地，用于应用正常功能。',
       '',
       '3. 相机与相册权限',
-      '当你使用拍照/OCR 或选择图片时，应用会请求相机/相册权限。相关图片仅用于本地处理与展示。',
+      '当你使用拍照/OCR 或选择图片/视频时，应用会请求相机/相册权限。相关媒体仅用于本地处理与展示。',
       '',
-      '4. OCR 识别',
-      'OCR 依赖系统/第三方的本地文字识别能力（例如 ML Kit）。应用不会主动上传你的图片或识别内容到我们的服务器。',
+      '4. 定位与天气',
+      '如启用所在地天气，应用会请求定位权限，并向天气服务发送必要的经纬度信息以获取天气数据。',
       '',
-      '5. 第三方服务',
+      '5. AI 分析',
+      '当你启用 AI 分析并填写 Base URL/API Key 后，应用会向你配置的第三方 AI 服务发送统计摘要与提示词。',
+      '',
+      '6. OCR 识别',
+      'OCR 依赖本地或系统/第三方文字识别能力（例如 ML Kit）。应用不会主动上传你的图片或识别内容到我们的服务器。',
+      '',
+      '7. 第三方服务',
       '本应用不集成广告 SDK，不包含第三方统计/跟踪代码。',
       '',
-      '6. 联系方式',
+      '8. 联系方式',
       '如你对隐私政策有疑问，可通过你发布应用时提供的联系渠道与开发者联系。',
     ].join('\n');
 
@@ -3409,20 +3551,6 @@ class _SettingsPageState extends State<SettingsPage> {
     await prefs.setDouble(_caffeineLimitKey, limit);
   }
 
-  Future<void> _loadDetectionEngine() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getBool(_useMlKitDetectionKey) ?? false;
-    if (!mounted) return;
-    setState(() {
-      _useMlKitDetection = saved;
-    });
-  }
-
-  Future<void> _saveDetectionEngine(bool useMlKit) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_useMlKitDetectionKey, useMlKit);
-  }
-
   Future<void> _loadAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
     final apiKey = prefs.getString(_openAiApiKeyKey) ?? '';
@@ -3501,6 +3629,10 @@ class _SettingsPageState extends State<SettingsPage> {
     if (parsed == null) return null;
     if (!(parsed.scheme == 'http' || parsed.scheme == 'https')) return null;
     if (parsed.host.isEmpty) return null;
+    final segments = parsed.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.isEmpty) {
+      return parsed.replace(pathSegments: ['v1']);
+    }
     return parsed;
   }
 
@@ -3622,7 +3754,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     children: [
                       Expanded(
                         child: Text(
-                          'AI 配置（OpenAI）',
+                          'AI 配置（OpenAI 兼容）',
                           style: textTheme.titleMedium?.copyWith(fontSize: 18),
                         ),
                       ),
@@ -3646,7 +3778,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     keyboardType: TextInputType.url,
                     decoration: InputDecoration(
                       labelText: 'Base URL',
-                      hintText: 'https://api.openai.com/v1',
+                      hintText:
+                          'https://api.openai.com/v1 或 https://integrate.api.nvidia.com',
                       filled: true,
                       fillColor: cardColor,
                       border: OutlineInputBorder(
@@ -3699,7 +3832,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     enableSuggestions: false,
                     decoration: InputDecoration(
                       labelText: 'Model（可选）',
-                      hintText: 'gpt-4o-mini',
+                      hintText: 'gpt-4o-mini / meta/llama-3.1-8b-instruct',
                       filled: true,
                       fillColor: cardColor,
                       border: OutlineInputBorder(
@@ -3822,45 +3955,6 @@ class _SettingsPageState extends State<SettingsPage> {
                       ],
                     ),
                     const SizedBox(height: 6),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-              _StatCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '贴纸识别引擎',
-                      style: textTheme.titleMedium?.copyWith(fontSize: 18),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _useMlKitDetection ? '当前：ML Kit' : '当前：YOLOv8 本地模型',
-                      style: textTheme.bodyMedium?.copyWith(color: secondary),
-                    ),
-                    const SizedBox(height: 12),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: OutlinedButton(
-                        onPressed: () {
-                          final next = !_useMlKitDetection;
-                          setState(() {
-                            _useMlKitDetection = next;
-                          });
-                          _saveDetectionEngine(next);
-                        },
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppTheme.accentOf(context),
-                          side: BorderSide(
-                            color: AppTheme.accentOf(context).withAlpha(120),
-                          ),
-                        ),
-                        child: Text(
-                          _useMlKitDetection ? '切换到 YOLOv8' : '切换到 ML Kit',
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ),
@@ -4320,12 +4414,424 @@ class CoffeeDiaryPage extends StatefulWidget {
   State<CoffeeDiaryPage> createState() => _CoffeeDiaryPageState();
 }
 
+Future<Uint8List?> _cropEditorToJpg(
+  ExtendedImageEditorState state, {
+  Uint8List? rawDataOverride,
+  int quality = 92,
+}) async {
+  try {
+    final rect = state.getCropRect();
+    final data = rawDataOverride ?? state.rawImageData;
+    if (rect == null || data.isEmpty) return null;
+    if (!rect.left.isFinite ||
+        !rect.top.isFinite ||
+        !rect.width.isFinite ||
+        !rect.height.isFinite ||
+        rect.width <= 0 ||
+        rect.height <= 0) {
+      return null;
+    }
+    final decoded = img.decodeImage(data);
+    if (decoded == null) return null;
+    var image = img.bakeOrientation(decoded);
+    final action = state.editAction;
+    if (action?.needCrop ?? true) {
+      final left =
+          rect.left.isFinite ? rect.left.round().clamp(0, image.width - 1) : 0;
+      final top =
+          rect.top.isFinite ? rect.top.round().clamp(0, image.height - 1) : 0;
+      final width = rect.width.isFinite
+          ? rect.width.round().clamp(1, image.width - left)
+          : image.width;
+      final height = rect.height.isFinite
+          ? rect.height.round().clamp(1, image.height - top)
+          : image.height;
+      image = img.copyCrop(
+        image,
+        x: left,
+        y: top,
+        width: width,
+        height: height,
+      );
+    }
+    if (action?.needFlip ?? false) {
+      img.FlipDirection? direction;
+      if ((action?.flipY ?? false) && (action?.flipX ?? false)) {
+        direction = img.FlipDirection.both;
+      } else if (action?.flipY ?? false) {
+        direction = img.FlipDirection.horizontal;
+      } else if (action?.flipX ?? false) {
+        direction = img.FlipDirection.vertical;
+      }
+      if (direction != null) {
+        image = img.flip(image, direction: direction);
+      }
+    }
+    if (action?.hasRotateAngle ?? false) {
+      image = img.copyRotate(image, angle: action!.rotateAngle);
+    }
+    return Uint8List.fromList(
+      img.encodeJpg(image, quality: quality),
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+class AvatarCropPage extends StatefulWidget {
+  const AvatarCropPage({super.key, required this.file});
+
+  final File file;
+
+  @override
+  State<AvatarCropPage> createState() => _AvatarCropPageState();
+}
+
+class _AvatarCropPageState extends State<AvatarCropPage> {
+  final GlobalKey<ExtendedImageEditorState> _editorKey =
+      GlobalKey<ExtendedImageEditorState>();
+  bool _saving = false;
+
+  void _showCropMessage(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text)),
+    );
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+    });
+    try {
+      final state = _editorKey.currentState;
+      if (state == null) {
+        _showCropMessage('裁切器还没准备好');
+        return;
+      }
+      if (state.getCropRect() == null) {
+        _showCropMessage('裁切器未就绪，请稍等后重试');
+        return;
+      }
+      final rawOverride =
+          state.rawImageData.isEmpty ? await widget.file.readAsBytes() : null;
+      final bytes = await _cropEditorToJpg(state, rawDataOverride: rawOverride);
+      if (bytes == null) {
+        _showCropMessage('裁切失败：图片未加载完成，请稍等后重试');
+        return;
+      }
+      final dir = await getApplicationDocumentsDirectory();
+      final imagesDir = Directory('${dir.path}/coffee_images');
+      if (!imagesDir.existsSync()) {
+        imagesDir.createSync(recursive: true);
+      }
+      final path =
+          '${imagesDir.path}/avatar_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await File(path).writeAsBytes(bytes);
+      if (!mounted) return;
+      Navigator.of(context).pop(path);
+    } catch (e) {
+      _showCropMessage(kDebugMode ? '裁切失败：$e' : '裁切失败，请换一张图片重试');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('裁切头像'),
+        actions: [
+          TextButton(
+            onPressed: _saving ? null : _save,
+            child: Text(
+              '完成',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: ExtendedImage.file(
+        widget.file,
+        fit: BoxFit.contain,
+        cacheRawData: true,
+        mode: ExtendedImageMode.editor,
+        extendedImageEditorKey: _editorKey,
+        initEditorConfigHandler: (_) {
+          return EditorConfig(
+            maxScale: 8.0,
+            cropRectPadding: const EdgeInsets.all(20),
+            cropAspectRatio: 1,
+            hitTestSize: 20.0,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class CoverCropPage extends StatefulWidget {
+  const CoverCropPage({super.key, required this.file});
+
+  final File file;
+
+  @override
+  State<CoverCropPage> createState() => _CoverCropPageState();
+}
+
+class _CoverCropPageState extends State<CoverCropPage> {
+  final GlobalKey<ExtendedImageEditorState> _editorKey =
+      GlobalKey<ExtendedImageEditorState>();
+  bool _saving = false;
+
+  void _showCropMessage(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text)),
+    );
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+    });
+    try {
+      final state = _editorKey.currentState;
+      if (state == null) {
+        _showCropMessage('裁切器还没准备好');
+        return;
+      }
+      if (state.getCropRect() == null) {
+        _showCropMessage('裁切器未就绪，请稍等后重试');
+        return;
+      }
+      final rawOverride =
+          state.rawImageData.isEmpty ? await widget.file.readAsBytes() : null;
+      final bytes = await _cropEditorToJpg(state, rawDataOverride: rawOverride);
+      if (bytes == null) {
+        _showCropMessage('裁切失败：图片未加载完成，请稍等后重试');
+        return;
+      }
+      final dir = await getApplicationDocumentsDirectory();
+      final imagesDir = Directory('${dir.path}/coffee_images');
+      if (!imagesDir.existsSync()) {
+        imagesDir.createSync(recursive: true);
+      }
+      final path =
+          '${imagesDir.path}/cover_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await File(path).writeAsBytes(bytes);
+      if (!mounted) return;
+      Navigator.of(context).pop(path);
+    } catch (e) {
+      _showCropMessage(kDebugMode ? '裁切失败：$e' : '裁切失败，请换一张图片重试');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary =
+        isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('裁切背景'),
+        actions: [
+          TextButton(
+            onPressed: _saving ? null : _save,
+            child: Text(
+              '完成',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: ExtendedImage.file(
+        widget.file,
+        fit: BoxFit.contain,
+        cacheRawData: true,
+        mode: ExtendedImageMode.editor,
+        extendedImageEditorKey: _editorKey,
+        initEditorConfigHandler: (_) {
+          return EditorConfig(
+            maxScale: 8.0,
+            cropRectPadding: const EdgeInsets.all(20),
+            cropAspectRatio: 16 / 9,
+            hitTestSize: 20.0,
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _CoffeeDiaryPageState extends State<CoffeeDiaryPage> {
+  static const String _diaryAvatarKey = 'diary_avatar_path';
+  static const String _diaryCoverKey = 'diary_cover_path';
+  String? _avatarPath;
+  String? _coverPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHeaderAssets();
+  }
+
   String _dateLabel(DateTime date) {
     final y = date.year.toString();
     final m = date.month.toString().padLeft(2, '0');
     final d = date.day.toString().padLeft(2, '0');
     return '$y-$m-$d';
+  }
+
+  Future<void> _loadHeaderAssets() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _avatarPath = prefs.getString(_diaryAvatarKey);
+      _coverPath = prefs.getString(_diaryCoverKey);
+    });
+  }
+
+  Future<void> _pickHeaderImage({required bool isAvatar}) async {
+    final path = isAvatar ? await _pickAvatarImage() : await _pickCoverImage();
+    if (path == null) return;
+    if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      if (isAvatar) {
+        _avatarPath = path;
+      } else {
+        _coverPath = path;
+      }
+    });
+    if (isAvatar) {
+      await prefs.setString(_diaryAvatarKey, path);
+    } else {
+      await prefs.setString(_diaryCoverKey, path);
+    }
+  }
+
+  Future<String?> _pickAvatarImage() async {
+    if (kIsWeb) {
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (picked == null) return null;
+      return persistPickedImage(picked);
+    }
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.photo_camera),
+                  title: const Text('拍照'),
+                  onTap: () => Navigator.of(context).pop(ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library),
+                  title: const Text('从图库选择'),
+                  onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (source == null) return null;
+    final picked = await ImagePicker().pickImage(source: source);
+    if (picked == null) return null;
+    if (!mounted) return null;
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => AvatarCropPage(file: File(picked.path)),
+      ),
+    );
+    return result;
+  }
+
+  Future<String?> _pickCoverImage() async {
+    if (kIsWeb) {
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (picked == null) return null;
+      return persistPickedImage(picked);
+    }
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.photo_camera),
+                  title: const Text('拍照'),
+                  onTap: () => Navigator.of(context).pop(ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library),
+                  title: const Text('从图库选择'),
+                  onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (source == null) return null;
+    final picked = await ImagePicker().pickImage(source: source);
+    if (picked == null) return null;
+    if (!mounted) return null;
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => CoverCropPage(file: File(picked.path)),
+      ),
+    );
+    return result;
   }
 
   Future<void> _openEditor({CoffeeDiaryEntry? initial}) async {
@@ -4364,19 +4870,99 @@ class _CoffeeDiaryPageState extends State<CoffeeDiaryPage> {
         isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight;
     return Scaffold(
       body: SafeArea(
+        top: false,
         child: Column(
           children: [
             Padding(
+              padding: const EdgeInsets.fromLTRB(0, 0, 0, 6),
+              child: SizedBox(
+                height: 180,
+                width: double.infinity,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.zero,
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () => _pickHeaderImage(isAvatar: false),
+                            child: Container(
+                              color: isDark
+                                  ? Colors.white.withAlpha(10)
+                                  : Colors.black.withAlpha(6),
+                              child: _coverPath == null
+                                  ? const SizedBox.expand()
+                                  : SizedBox.expand(
+                                      child: storedImage(
+                                        _coverPath!,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 16,
+                      bottom: 12,
+                      child: Material(
+                        color: Colors.transparent,
+                        shape: const CircleBorder(),
+                        child: InkWell(
+                          onTap: () => _pickHeaderImage(isAvatar: true),
+                          customBorder: const CircleBorder(),
+                          child: Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isDark ? AppTheme.darkCard : Colors.white,
+                              border: Border.all(
+                                color: isDark
+                                    ? Colors.white.withAlpha(30)
+                                    : Colors.black.withAlpha(10),
+                                width: 2,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color:
+                                      Colors.black.withAlpha(isDark ? 90 : 18),
+                                  blurRadius: 16,
+                                  offset: const Offset(0, 8),
+                                ),
+                              ],
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: _avatarPath == null
+                                ? Icon(
+                                    Icons.person,
+                                    color: secondary,
+                                    size: 32,
+                                  )
+                                : storedImage(
+                                    _avatarPath!,
+                                    fit: BoxFit.cover,
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const SizedBox(width: 70),
                   Text(
-                    '日记',
+                    '咖啡日记',
                     style: textTheme.titleMedium
                         ?.copyWith(fontSize: 18, color: primary),
                   ),
+                  const Spacer(),
                   GestureDetector(
                     onTap: () => _openEditor(),
                     child: Container(
@@ -4429,11 +5015,10 @@ class _CoffeeDiaryPageState extends State<CoffeeDiaryPage> {
                     itemBuilder: (context, index) {
                       final entry = entries[index];
                       final images = entry.imagePaths;
-                      final preview = images.take(3).toList(growable: false);
+                      final cover = images.isEmpty ? null : images.first;
                       return GestureDetector(
                         onTap: () => _openDetail(entry.id),
                         child: Container(
-                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
                           decoration: BoxDecoration(
                             color: cardColor,
                             borderRadius: BorderRadius.circular(26),
@@ -4445,90 +5030,82 @@ class _CoffeeDiaryPageState extends State<CoffeeDiaryPage> {
                               ),
                             ],
                           ),
+                          clipBehavior: Clip.antiAlias,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                _dateLabel(entry.date),
-                                style: textTheme.titleMedium?.copyWith(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w800,
-                                  color: primary,
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 14, 16, 10),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 34,
+                                      height: 34,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: isDark
+                                            ? Colors.white.withAlpha(14)
+                                            : Colors.black.withAlpha(6),
+                                      ),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: _avatarPath == null
+                                          ? Icon(
+                                              Icons.person,
+                                              color: secondary,
+                                              size: 18,
+                                            )
+                                          : storedImage(
+                                              _avatarPath!,
+                                              fit: BoxFit.cover,
+                                            ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      '咖啡日记',
+                                      style: textTheme.titleSmall?.copyWith(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w800,
+                                        color: primary,
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Text(
+                                      _dateLabel(entry.date),
+                                      style: textTheme.bodySmall?.copyWith(
+                                        color: secondary,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              if ((entry.text ?? '').trim().isNotEmpty) ...[
-                                const SizedBox(height: 10),
-                                Text(
-                                  entry.text!.trim(),
-                                  maxLines: 4,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: textTheme.bodyMedium?.copyWith(
-                                    color: secondary,
-                                    height: 1.35,
-                                  ),
-                                ),
-                              ],
-                              if (preview.isNotEmpty) ...[
-                                const SizedBox(height: 12),
+                              if (cover != null)
                                 SizedBox(
-                                  height: 76,
-                                  child: ListView.separated(
-                                    scrollDirection: Axis.horizontal,
-                                    itemBuilder: (context, i) {
-                                      final path = preview[i];
-                                      final videoPath =
-                                          i < entry.motionVideoPaths.length
-                                              ? entry.motionVideoPaths[i]
-                                              : '';
-                                      return Stack(
-                                        children: [
-                                          ClipRRect(
-                                            borderRadius:
-                                                BorderRadius.circular(18),
-                                            child: SizedBox(
-                                              width: 76,
-                                              height: 76,
-                                              child: storedImage(
-                                                path,
-                                                fit: BoxFit.cover,
-                                              ),
-                                            ),
-                                          ),
-                                          if (videoPath.trim().isNotEmpty)
-                                            Positioned(
-                                              left: 6,
-                                              top: 6,
-                                              child: Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                  horizontal: 6,
-                                                  vertical: 3,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.black
-                                                      .withAlpha(110),
-                                                  borderRadius:
-                                                      BorderRadius.circular(10),
-                                                ),
-                                                child: const Text(
-                                                  'LIVE',
-                                                  style: TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.w800,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      );
-                                    },
-                                    separatorBuilder: (_, __) =>
-                                        const SizedBox(width: 10),
-                                    itemCount: preview.length,
+                                  width: double.infinity,
+                                  height: 240,
+                                  child: storedImage(
+                                    cover,
+                                    fit: BoxFit.cover,
                                   ),
                                 ),
-                              ],
+                              if ((entry.text ?? '').trim().isNotEmpty)
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                                  child: Text(
+                                    entry.text!.trim(),
+                                    maxLines: 4,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: textTheme.bodyMedium?.copyWith(
+                                      color: primary,
+                                      height: 1.4,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                )
+                              else
+                                const SizedBox(height: 16),
                             ],
                           ),
                         ),
@@ -4630,21 +5207,6 @@ class _DiaryEntryDetailPageState extends State<DiaryEntryDetailPage> {
     );
   }
 
-  Future<void> _openMedia({
-    required String imagePath,
-    required String videoPath,
-    required bool preferMotion,
-  }) async {
-    if (preferMotion && videoPath.trim().isNotEmpty) {
-      await showDialog<void>(
-        context: context,
-        builder: (_) => _MotionPreviewDialog(videoPath: videoPath),
-      );
-      return;
-    }
-    await _openImage(imagePath);
-  }
-
   Future<void> _edit(CoffeeDiaryEntry entry) async {
     final changed = await Navigator.of(context).push<bool>(
       _bottomUpRoute<bool>(AddDiaryEntryPage(initialEntry: entry)),
@@ -4662,7 +5224,7 @@ class _DiaryEntryDetailPageState extends State<DiaryEntryDetailPage> {
       builder: (context) {
         final errorColor = Theme.of(context).colorScheme.error;
         return AlertDialog(
-          title: const Text('删除这篇日记？'),
+          title: const Text('删除这篇咖啡日记？'),
           content: const Text('删除后无法恢复。'),
           actions: [
             TextButton(
@@ -4706,13 +5268,12 @@ class _DiaryEntryDetailPageState extends State<DiaryEntryDetailPage> {
             if (entry == null) {
               return Center(
                 child: Text(
-                  '日记不存在或已删除',
+                  '咖啡日记不存在或已删除',
                   style: textTheme.bodyMedium?.copyWith(color: secondary),
                 ),
               );
             }
             final images = entry.imagePaths;
-            final videos = entry.motionVideoPaths;
             return Column(
               children: [
                 Padding(
@@ -4824,20 +5385,7 @@ class _DiaryEntryDetailPageState extends State<DiaryEntryDetailPage> {
                                 Stack(
                                   children: [
                                     GestureDetector(
-                                      onTap: () => _openMedia(
-                                        imagePath: e.value,
-                                        videoPath: e.key < videos.length
-                                            ? videos[e.key]
-                                            : '',
-                                        preferMotion: false,
-                                      ),
-                                      onLongPress: () => _openMedia(
-                                        imagePath: e.value,
-                                        videoPath: e.key < videos.length
-                                            ? videos[e.key]
-                                            : '',
-                                        preferMotion: true,
-                                      ),
+                                      onTap: () => _openImage(e.value),
                                       child: ClipRRect(
                                         borderRadius: BorderRadius.circular(18),
                                         child: SizedBox(
@@ -4850,31 +5398,6 @@ class _DiaryEntryDetailPageState extends State<DiaryEntryDetailPage> {
                                         ),
                                       ),
                                     ),
-                                    if (e.key < videos.length &&
-                                        videos[e.key].trim().isNotEmpty)
-                                      Positioned(
-                                        left: 8,
-                                        top: 8,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                            vertical: 4,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.black.withAlpha(110),
-                                            borderRadius:
-                                                BorderRadius.circular(12),
-                                          ),
-                                          child: const Text(
-                                            'LIVE',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w800,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
                                   ],
                                 ),
                             ],
@@ -4929,7 +5452,6 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
   final CameraService _cameraService = CameraService();
   DateTime _date = DateTime.now();
   List<String> _imagePaths = [];
-  List<String> _motionVideoPaths = [];
   bool _saving = false;
 
   bool get _isEditing => widget.initialEntry != null;
@@ -4942,14 +5464,6 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
       _date = initial.date;
       _textController.text = (initial.text ?? '').trim();
       _imagePaths = List<String>.from(initial.imagePaths);
-      final rawVideos = initial.motionVideoPaths;
-      if (rawVideos.length == _imagePaths.length) {
-        _motionVideoPaths = List<String>.from(rawVideos);
-      } else {
-        _motionVideoPaths = List<String>.filled(_imagePaths.length, '');
-      }
-    } else {
-      _motionVideoPaths = [];
     }
   }
 
@@ -5043,15 +5557,6 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
                     await _addPickedXFile(file);
                   },
                 ),
-                ListTile(
-                  leading: const Icon(Icons.motion_photos_on_outlined),
-                  title: const Text('从相册选择（支持实况）'),
-                  onTap: () async {
-                    if (!context.mounted) return;
-                    Navigator.of(context).pop();
-                    await _pickFromSystemGallery();
-                  },
-                ),
               ],
             ),
           ),
@@ -5060,274 +5565,34 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
     );
   }
 
-  Future<String> _persistDiaryFile(File file) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final targetDir = Directory('${dir.path}/diary_media');
-    if (!targetDir.existsSync()) {
-      targetDir.createSync(recursive: true);
-    }
-    final path = file.path;
-    final dot = path.lastIndexOf('.');
-    final ext = dot >= 0 ? path.substring(dot) : '.jpg';
-    final filename = 'diary_${DateTime.now().millisecondsSinceEpoch}$ext';
-    final targetPath = '${targetDir.path}/$filename';
-    await file.copy(targetPath);
-    return targetPath;
-  }
-
   Future<void> _addPickedXFile(XFile file) async {
     final persisted = await persistPickedImage(file);
     if (!mounted) return;
     setState(() {
       _imagePaths = [..._imagePaths, persisted];
-      _motionVideoPaths = [..._motionVideoPaths, ''];
     });
   }
 
-  Future<void> _pickFromSystemGallery() async {
-    if (kIsWeb) return;
-    final asset = await Navigator.of(context).push<AssetEntity?>(
-      MaterialPageRoute(builder: (_) => const DiaryAssetPickerPage()),
-    );
-    if (!mounted) return;
-    if (asset == null) return;
-    final origin = await asset.originFile;
-    if (!mounted) return;
-    if (origin == null) return;
-    final persistedImage = await _persistDiaryFile(origin);
-    var persistedVideo = '';
-    var isMotion = false;
-    var usedPairedVideo = false;
-    try {
-      final motionPhotos = MotionPhotos(origin.path);
-      isMotion = await motionPhotos.isMotionPhoto();
-      if (isMotion) {
-        final dir = await getApplicationDocumentsDirectory();
-        final targetDir = Directory('${dir.path}/diary_media');
-        if (!targetDir.existsSync()) {
-          targetDir.createSync(recursive: true);
-        }
-        final file = await motionPhotos.getMotionVideoFile(
-          targetDir,
-          fileName: 'motion_${DateTime.now().millisecondsSinceEpoch}.mp4',
-        );
-        persistedVideo = file.path;
-      }
-    } catch (_) {}
-    if (persistedVideo.trim().isEmpty) {
-      final paired = await _tryFindPairedMotionVideo(asset);
-      if (!mounted) return;
-      if (paired.trim().isNotEmpty) {
-        persistedVideo = paired;
-        usedPairedVideo = true;
-      }
-    }
-    if (persistedVideo.trim().isEmpty) {
-      final manual = await _pickPairedVideo();
-      if (!mounted) return;
-      if (manual.trim().isNotEmpty) {
-        persistedVideo = manual;
-        usedPairedVideo = true;
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _imagePaths = [..._imagePaths, persistedImage];
-      _motionVideoPaths = [..._motionVideoPaths, persistedVideo];
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          persistedVideo.trim().isNotEmpty
-              ? (usedPairedVideo ? '已识别实况照片（配对视频）' : '已识别实况照片')
-              : (isMotion ? '实况检测成功但提取失败（将按普通照片保存）' : '未识别到实况视频（将按普通照片保存）'),
-        ),
-      ),
-    );
-  }
-
-  Future<String> _pickPairedVideo() async {
-    if (!mounted) return '';
-    final navigator = Navigator.of(context);
-    final shouldPick = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('未识别到实况视频'),
-          content: const Text('是否手动选择配对视频？'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('跳过'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('选择'),
-            ),
-          ],
-        );
-      },
-    );
-    if (!mounted) return '';
-    if (shouldPick != true) return '';
-    final picked = await navigator.push<AssetEntity?>(
-      MaterialPageRoute(
-        builder: (_) => const DiaryAssetPickerPage(
-          requestType: RequestType.video,
-          title: '选择配对视频',
-        ),
-      ),
-    );
-    if (!mounted) return '';
-    if (picked == null) return '';
-    final origin = await picked.originFile;
-    if (!mounted) return '';
-    if (origin == null) return '';
-    final persisted = await _persistDiaryFile(origin);
-    if (!mounted) return '';
-    return persisted;
-  }
-
-  String _stripExt(String name) {
-    final dot = name.lastIndexOf('.');
-    return dot > 0 ? name.substring(0, dot) : name;
-  }
-
-  String _extractTimeToken(String text) {
-    final normalized = text.replaceAll('-', '_');
-    final m1 = RegExp(r'\d{8}_\d{6}').firstMatch(normalized);
-    if (m1 != null) {
-      return m1.group(0)!.replaceAll('_', '');
-    }
-    final m2 = RegExp(r'\d{12,14}').firstMatch(text);
-    if (m2 != null) return m2.group(0)!;
-    final m3 = RegExp(r'\d{10,}').firstMatch(text);
-    if (m3 != null) return m3.group(0)!;
-    return '';
-  }
-
-  int _absInt(int v) => v < 0 ? -v : v;
-
-  Future<String> _tryFindPairedMotionVideo(AssetEntity imageAsset) async {
-    if (kIsWeb) return '';
-    if (defaultTargetPlatform != TargetPlatform.android) return '';
-    final imageTime = imageAsset.createDateTime;
-    final imageTitle = imageAsset.title ?? '';
-    final imageBase = _stripExt(imageTitle);
-    final imageToken = _extractTimeToken(imageBase);
-    final imageFolder = imageAsset.relativePath ?? '';
-    final optionGroup = FilterOptionGroup(
-      orders: [
-        const OrderOption(type: OrderOptionType.createDate, asc: false),
-      ],
-    );
-    final videoPaths = await PhotoManager.getAssetPathList(
-      type: RequestType.video,
-      filterOption: optionGroup,
-      onlyAll: true,
-    );
-    if (!mounted) return '';
-    if (videoPaths.isEmpty) return '';
-    final allVideos = videoPaths.first;
-
-    const windowSeconds = 20;
-    const maxPages = 12;
-    const size = 200;
-    var bestScore = -1;
-    AssetEntity? best;
-
-    for (var page = 0; page < maxPages; page++) {
-      final list = await allVideos.getAssetListPaged(page: page, size: size);
-      if (!mounted) return '';
-      if (list.isEmpty) break;
-      for (final v in list) {
-        if (v.type != AssetType.video) continue;
-        final dt = _absInt(v.createDateTime.difference(imageTime).inSeconds);
-        if (dt > windowSeconds) continue;
-        var score = 0;
-        if (dt <= 1) score += 8;
-        if (dt <= 3) score += 6;
-        if (dt <= 8) score += 4;
-        if (dt <= 20) score += 2;
-        final vFolder = v.relativePath ?? '';
-        if (imageFolder.isNotEmpty && vFolder == imageFolder) score += 8;
-        final vTitle = v.title ?? '';
-        final vBase = _stripExt(vTitle);
-        final vToken = _extractTimeToken(vBase);
-        if (imageToken.isNotEmpty &&
-            vToken.isNotEmpty &&
-            (vToken.contains(imageToken) || imageToken.contains(vToken))) {
-          score += 14;
-          if (imageBase.startsWith('IMG') && vBase.startsWith('VID')) {
-            score += 4;
-          }
-        }
-        if (imageBase.isNotEmpty && vBase == imageBase) score += 10;
-        if (imageBase.isNotEmpty &&
-            (vBase.contains(imageBase) || imageBase.contains(vBase))) {
-          score += 4;
-        }
-        final duration = v.duration;
-        if (duration > 0 && duration <= 6) score += 4;
-        if (duration > 6 && duration <= 10) score += 2;
-        if (score > bestScore) {
-          bestScore = score;
-          best = v;
-        }
-      }
-      final oldest = list.last.createDateTime;
-      final tooOld =
-          oldest.isBefore(imageTime.subtract(const Duration(minutes: 10)));
-      if (tooOld) break;
-    }
-
-    if (best == null) return '';
-    if (bestScore < 12) return '';
-    final file = await best.originFile;
-    if (!mounted) return '';
-    if (file == null) return '';
-    final persisted = await _persistDiaryFile(file);
-    if (!mounted) return '';
-    return persisted;
-  }
-
-  Future<void> _removeMediaAt(int index) async {
+  Future<void> _removeImageAt(int index) async {
     if (_saving) return;
     final imagePath =
         index >= 0 && index < _imagePaths.length ? _imagePaths[index] : '';
-    final videoPath = index >= 0 && index < _motionVideoPaths.length
-        ? _motionVideoPaths[index]
-        : '';
     setState(() {
       final nextImages = List<String>.from(_imagePaths)..removeAt(index);
-      final nextVideos = List<String>.from(_motionVideoPaths)..removeAt(index);
       _imagePaths = nextImages;
-      _motionVideoPaths = nextVideos;
     });
-    for (final p in [imagePath, videoPath]) {
-      if (p.trim().isEmpty) continue;
-      try {
-        final file = File(p);
-        if (file.existsSync()) {
-          await file.delete();
-        }
-      } catch (_) {}
-    }
+    if (imagePath.trim().isEmpty) return;
+    try {
+      final file = File(imagePath);
+      if (file.existsSync()) {
+        await file.delete();
+      }
+    } catch (_) {}
   }
 
-  Future<void> _openMediaPreview(int index,
-      {required bool preferMotion}) async {
+  Future<void> _openImagePreview(int index) async {
     if (index < 0 || index >= _imagePaths.length) return;
     final imagePath = _imagePaths[index];
-    final videoPath =
-        index < _motionVideoPaths.length ? _motionVideoPaths[index] : '';
-    if (preferMotion && videoPath.trim().isNotEmpty) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => _MotionPreviewDialog(videoPath: videoPath),
-      );
-      return;
-    }
     await showDialog<void>(
       context: context,
       builder: (context) {
@@ -5363,7 +5628,7 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
     final text = _textController.text.trim();
     entry.text = text.isEmpty ? null : text;
     entry.imagePaths = List<String>.from(_imagePaths);
-    entry.motionVideoPaths = List<String>.from(_motionVideoPaths);
+    entry.motionVideoPaths = [];
     await repo.upsertEntry(entry);
     if (!mounted) return;
     Navigator.of(context).pop(true);
@@ -5378,7 +5643,7 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
       builder: (context) {
         final errorColor = Theme.of(context).colorScheme.error;
         return AlertDialog(
-          title: const Text('删除这篇日记？'),
+          title: const Text('删除这篇咖啡日记？'),
           content: const Text('删除后无法恢复。'),
           actions: [
             TextButton(
@@ -5451,7 +5716,7 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
                     ),
                   ),
                   Text(
-                    _isEditing ? '编辑日记' : '添加日记',
+                    _isEditing ? '编辑咖啡日记' : '添加咖啡日记',
                     style: textTheme.titleMedium
                         ?.copyWith(fontSize: 18, color: primary),
                   ),
@@ -5532,14 +5797,7 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
                           Stack(
                             children: [
                               GestureDetector(
-                                onTap: () => _openMediaPreview(
-                                  e.key,
-                                  preferMotion: false,
-                                ),
-                                onLongPress: () => _openMediaPreview(
-                                  e.key,
-                                  preferMotion: true,
-                                ),
+                                onTap: () => _openImagePreview(e.key),
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(18),
                                   child: SizedBox(
@@ -5552,37 +5810,13 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
                                   ),
                                 ),
                               ),
-                              if (e.key < _motionVideoPaths.length &&
-                                  _motionVideoPaths[e.key].trim().isNotEmpty)
-                                Positioned(
-                                  left: 6,
-                                  top: 6,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withAlpha(110),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: const Text(
-                                      'LIVE',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  ),
-                                ),
                               Positioned(
                                 top: 6,
                                 right: 6,
                                 child: GestureDetector(
                                   onTap: _saving
                                       ? null
-                                      : () => _removeMediaAt(e.key),
+                                      : () => _removeImageAt(e.key),
                                   child: Container(
                                     width: 26,
                                     height: 26,
@@ -5664,7 +5898,7 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
                           ),
                           onPressed: _saving ? null : _delete,
                           child: const Text(
-                            '删除这篇日记',
+                            '删除这篇咖啡日记',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w800,
@@ -5679,120 +5913,6 @@ class _AddDiaryEntryPageState extends State<AddDiaryEntryPage> {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MotionPreviewDialog extends StatefulWidget {
-  const _MotionPreviewDialog({required this.videoPath});
-
-  final String videoPath;
-
-  @override
-  State<_MotionPreviewDialog> createState() => _MotionPreviewDialogState();
-}
-
-class _MotionPreviewDialogState extends State<_MotionPreviewDialog> {
-  VideoPlayerController? _controller;
-  bool _ready = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _init();
-  }
-
-  Future<void> _init() async {
-    final controller = VideoPlayerController.file(File(widget.videoPath));
-    await controller.initialize();
-    await controller.setLooping(true);
-    await controller.play();
-    if (!mounted) {
-      await controller.dispose();
-      return;
-    }
-    setState(() {
-      _controller = controller;
-      _ready = true;
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = _controller;
-    return Dialog(
-      insetPadding: const EdgeInsets.all(18),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: AspectRatio(
-          aspectRatio:
-              _ready && controller != null ? controller.value.aspectRatio : 1,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (_ready && controller != null) VideoPlayer(controller),
-              if (!_ready)
-                const Center(
-                  child: CircularProgressIndicator(),
-                ),
-              Positioned(
-                right: 10,
-                top: 10,
-                child: GestureDetector(
-                  onTap: () => Navigator.of(context).pop(),
-                  child: Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      color: Colors.black.withAlpha(110),
-                      borderRadius: BorderRadius.circular(17),
-                    ),
-                    alignment: Alignment.center,
-                    child: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ),
-              ),
-              if (_ready && controller != null)
-                Positioned(
-                  left: 10,
-                  top: 10,
-                  child: GestureDetector(
-                    onTap: () {
-                      if (!controller.value.isInitialized) return;
-                      if (controller.value.isPlaying) {
-                        controller.pause();
-                      } else {
-                        controller.play();
-                      }
-                      setState(() {});
-                    },
-                    child: Container(
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withAlpha(110),
-                        borderRadius: BorderRadius.circular(17),
-                      ),
-                      alignment: Alignment.center,
-                      child: Icon(
-                        controller.value.isPlaying
-                            ? Icons.pause
-                            : Icons.play_arrow,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
         ),
       ),
     );
@@ -6913,6 +7033,92 @@ class _StatCard extends StatelessWidget {
   }
 }
 
+class _LiquidGlassButton extends StatelessWidget {
+  const _LiquidGlassButton({
+    required this.onTap,
+    required this.label,
+    required this.icon,
+  });
+
+  final VoidCallback onTap;
+  final String label;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accent = AppTheme.accentOf(context);
+    final textColor = isDark ? Colors.white : AppTheme.textPrimaryLight;
+    final content = Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withAlpha(isDark ? 26 : 20),
+            border: Border.all(
+              color: Colors.white.withAlpha(isDark ? 46 : 28),
+              width: 0.8,
+            ),
+          ),
+          child: Icon(icon, size: 16, color: textColor),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          label,
+          style: TextStyle(
+            color: textColor,
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.2,
+          ),
+        ),
+      ],
+    );
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Ink(
+          width: double.infinity,
+          height: 52,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: isDark
+                  ? [
+                      accent.withAlpha(28),
+                      accent.withAlpha(18),
+                    ]
+                  : [
+                      accent.withAlpha(32),
+                      accent.withAlpha(22),
+                    ],
+            ),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: accent.withAlpha(isDark ? 80 : 100),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: accent.withAlpha(isDark ? 40 : 30),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Center(child: content),
+        ),
+      ),
+    );
+  }
+}
+
 class _StatValue extends StatelessWidget {
   const _StatValue({
     required this.label,
@@ -7837,6 +8043,15 @@ class AddCoffeePage extends StatefulWidget {
 }
 
 class _AddCoffeePageState extends State<AddCoffeePage> {
+  static const String _customTypeLabel = '自定义';
+  static const List<String> _typeOptions = [
+    '美式',
+    '卡布奇诺',
+    '摩卡',
+    '浓缩',
+    '拿铁',
+    '馥芮白',
+  ];
   late DateTime _createdAt;
   String _type = '拿铁';
   String _cupSize = '中杯';
@@ -7851,6 +8066,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _priceController = TextEditingController();
   final TextEditingController _noteController = TextEditingController();
+  final TextEditingController _customTypeController = TextEditingController();
   final TextEditingController _beanNameController = TextEditingController();
   final TextEditingController _beanOriginController = TextEditingController();
   final TextEditingController _beanFlavorController = TextEditingController();
@@ -7863,6 +8079,13 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
   bool _saving = false;
 
   bool get _isEditing => widget.initialRecord != null;
+  String get _resolvedType {
+    if (_type == _customTypeLabel) {
+      final value = _customTypeController.text.trim();
+      return value.isEmpty ? _customTypeLabel : value;
+    }
+    return _type;
+  }
 
   @override
   void initState() {
@@ -7871,6 +8094,10 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
     if (initialRecord != null) {
       _createdAt = initialRecord.createdAt;
       _type = initialRecord.type;
+      if (!_typeOptions.contains(_type)) {
+        _customTypeController.text = _type.trim();
+        _type = _customTypeLabel;
+      }
       _cupSize = initialRecord.cupSize ?? _cupSize;
       _temp = initialRecord.temperature ?? _temp;
       _caffeineMg = initialRecord.caffeineMg.toDouble();
@@ -7930,6 +8157,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
     _nameController.dispose();
     _priceController.dispose();
     _noteController.dispose();
+    _customTypeController.dispose();
     _beanNameController.dispose();
     _beanOriginController.dispose();
     _beanFlavorController.dispose();
@@ -8198,10 +8426,11 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
       homemadeSection,
     ].where((s) => s.trim().isNotEmpty).join('\n\n').trim();
     final existing = widget.initialRecord;
+    final type = _resolvedType;
     if (existing != null) {
       final record = CoffeeRecord()
         ..id = existing.id
-        ..type = _type
+        ..type = type
         ..caffeineMg = _caffeineMg.round()
         ..sugarG = _sugarG.round()
         ..homemade = _homemade
@@ -8215,7 +8444,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
       await widget.repository.updateRecord(record);
     } else {
       final record = CoffeeRecord()
-        ..type = _type
+        ..type = type
         ..caffeineMg = _caffeineMg.round()
         ..sugarG = _sugarG.round()
         ..homemade = _homemade
@@ -8363,8 +8592,6 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
     return GestureDetector(
       onTap: _saving ? null : onTap,
       child: Container(
-        width: 106,
-        height: 72,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: bg,
@@ -8655,7 +8882,7 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
                           ),
                           Switch(
                             value: _homemade,
-                            activeColor: AppTheme.accentOf(context),
+                            activeThumbColor: AppTheme.accentOf(context),
                             onChanged: _saving
                                 ? null
                                 : (v) => setState(() => _homemade = v),
@@ -9018,25 +9245,48 @@ class _AddCoffeePageState extends State<AddCoffeePage> {
                             ),
                     ),
                     _sectionTitle('咖啡类型'),
-                    Wrap(
-                      spacing: 14,
-                      runSpacing: 14,
-                      children: [
-                        for (final t in const [
-                          '美式',
-                          '卡布奇诺',
-                          '摩卡',
-                          '浓缩',
-                          '拿铁',
-                          '馥芮白'
-                        ])
-                          _choiceCard(
-                            text: t,
-                            selected: _type == t,
-                            onTap: () => setState(() => _type = t),
-                          ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        const spacing = 14.0;
+                        const itemHeight = 72.0;
+                        final itemWidth = (constraints.maxWidth - spacing) / 2;
+                        final ratio = itemWidth / itemHeight;
+                        return GridView.count(
+                          crossAxisCount: 2,
+                          mainAxisSpacing: spacing,
+                          crossAxisSpacing: spacing,
+                          childAspectRatio: ratio,
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          children: [
+                            for (final t in _typeOptions)
+                              _choiceCard(
+                                text: t,
+                                selected: _type == t,
+                                onTap: () => setState(() => _type = t),
+                              ),
+                            _choiceCard(
+                              text: _customTypeLabel,
+                              selected: _type == _customTypeLabel,
+                              onTap: () =>
+                                  setState(() => _type = _customTypeLabel),
+                            ),
+                          ],
+                        );
+                      },
                     ),
+                    if (_type == _customTypeLabel) ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _customTypeController,
+                        enabled: !_saving,
+                        decoration: _filledInputDecoration(
+                          cardColor: cardColor,
+                          isDark: isDark,
+                          hintText: '输入咖啡类型',
+                        ),
+                      ),
+                    ],
                     _sectionTitle('杯型'),
                     Row(
                       children: [
@@ -9227,13 +9477,14 @@ Route<T> _transitionRoute<T>(Widget target, int from, int to) {
 Route<T> _bottomUpRoute<T>(Widget target) {
   return PageRouteBuilder<T>(
     pageBuilder: (context, animation, secondaryAnimation) => target,
-    transitionDuration: const Duration(milliseconds: 520),
-    reverseTransitionDuration: const Duration(milliseconds: 320),
+    transitionDuration: const Duration(milliseconds: 350),
+    reverseTransitionDuration: const Duration(milliseconds: 280),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
+      // iOS风格的弹簧动画曲线
       final curved = CurvedAnimation(
         parent: animation,
-        curve: Curves.easeOutBack,
-        reverseCurve: Curves.easeIn,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
       );
       return SlideTransition(
         position: Tween<Offset>(
@@ -9241,7 +9492,12 @@ Route<T> _bottomUpRoute<T>(Widget target) {
           end: Offset.zero,
         ).animate(curved),
         child: FadeTransition(
-          opacity: Tween<double>(begin: 0.92, end: 1).animate(curved),
+          opacity: Tween<double>(begin: 0, end: 1).animate(
+            CurvedAnimation(
+              parent: animation,
+              curve: const Interval(0, 0.3, curve: Curves.easeOut),
+            ),
+          ),
           child: child,
         ),
       );

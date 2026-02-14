@@ -29,6 +29,9 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
   final List<AssetEntity> _assets = [];
   int _page = 0;
   final ScrollController _controller = ScrollController();
+  
+  // 缩略图缓存，避免重复加载
+  final Map<String, Uint8List> _thumbnailCache = {};
 
   @override
   void initState() {
@@ -42,6 +45,7 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
+    _thumbnailCache.clear(); // 清理缓存
     super.dispose();
   }
 
@@ -131,6 +135,7 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
           ? paths.firstWhere((p) => p.isAll)
           : paths.first;
       _assets.clear();
+      _thumbnailCache.clear(); // 清理旧缓存
       _page = 0;
     });
     await _loadMore();
@@ -240,6 +245,7 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
     setState(() {
       _path = picked;
       _assets.clear();
+      _thumbnailCache.clear(); // 切换相册时清理缓存
       _page = 0;
     });
     await _loadMore();
@@ -340,7 +346,9 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              '没有读取到照片',
+                              widget.requestType == RequestType.video
+                                  ? '没有读取到视频'
+                                  : '没有读取到照片',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w800,
@@ -349,7 +357,9 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              '可能原因：相册里没有照片 / 只允许访问选中的照片 / 模拟器未导入图片',
+                              widget.requestType == RequestType.video
+                                  ? '可能原因：相册里没有视频 / 只允许访问选中的视频 / 模拟器未导入视频'
+                                  : '可能原因：相册里没有照片 / 只允许访问选中的照片 / 模拟器未导入图片',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 12,
@@ -403,6 +413,8 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
                       itemCount: _assets.length,
                       itemBuilder: (context, index) {
                         final entity = _assets[index];
+                        final cacheKey = entity.id;
+                        
                         return GestureDetector(
                           onTap: () => Navigator.of(context).pop(entity),
                           onLongPress: () => _probeMotion(entity),
@@ -411,24 +423,33 @@ class _DiaryAssetPickerPageState extends State<DiaryAssetPickerPage>
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                FutureBuilder<Uint8List?>(
-                                  future: entity.thumbnailDataWithSize(
-                                    const ThumbnailSize(300, 300),
-                                  ),
-                                  builder: (context, snapshot) {
-                                    final bytes = snapshot.data;
-                                    if (bytes == null) {
-                                      return Container(
-                                        color: Colors.black.withAlpha(10),
-                                      );
-                                    }
-                                    return Image.memory(
-                                      bytes,
-                                      fit: BoxFit.cover,
-                                      gaplessPlayback: true,
-                                    );
-                                  },
-                                ),
+                                // 使用缓存优化缩略图加载
+                                _thumbnailCache.containsKey(cacheKey)
+                                    ? Image.memory(
+                                        _thumbnailCache[cacheKey]!,
+                                        fit: BoxFit.cover,
+                                        gaplessPlayback: true,
+                                      )
+                                    : FutureBuilder<Uint8List?>(
+                                        future: entity.thumbnailDataWithSize(
+                                          const ThumbnailSize(300, 300),
+                                        ),
+                                        builder: (context, snapshot) {
+                                          final bytes = snapshot.data;
+                                          if (bytes == null) {
+                                            return Container(
+                                              color: Colors.black.withAlpha(10),
+                                            );
+                                          }
+                                          // 缓存缩略图
+                                          _thumbnailCache[cacheKey] = bytes;
+                                          return Image.memory(
+                                            bytes,
+                                            fit: BoxFit.cover,
+                                            gaplessPlayback: true,
+                                          );
+                                        },
+                                      ),
                                 Positioned(
                                   right: 6,
                                   top: 6,

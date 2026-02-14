@@ -6,6 +6,9 @@ import 'weather_client.dart';
 class OpenWeatherMapClient implements WeatherClient {
   const OpenWeatherMapClient();
 
+  static const int _maxRetries = 2;
+  static const Duration _timeout = Duration(seconds: 15);
+
   @override
   Future<WeatherData> fetchCurrent({
     required double latitude,
@@ -29,23 +32,8 @@ class OpenWeatherMapClient implements WeatherClient {
       },
     );
 
-    final client = http.Client();
-    try {
-      final response = await client.get(
-        uri,
-        headers: <String, String>{
-          'accept': 'application/json',
-        },
-      );
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception('HTTP ${response.statusCode}: ${response.body}');
-      }
-
-      final json = jsonDecode(utf8.decode(response.bodyBytes));
-      if (json is! Map<String, dynamic>) {
-        throw const FormatException('OpenWeatherMap 响应不是 JSON 对象');
-      }
+    // 使用重试机制获取数据
+    final json = await _getJsonWithRetry(uri);
 
       final main = json['main'];
       final weatherList = json['weather'] as List?;
@@ -68,9 +56,55 @@ class OpenWeatherMapClient implements WeatherClient {
         condition: condition,
         icon: icon,
       );
+  }
+
+  /// 带重试机制的 JSON 获取
+  Future<Map<String, dynamic>> _getJsonWithRetry(
+    Uri uri, {
+    int maxRetries = _maxRetries,
+  }) async {
+    Exception? lastException;
+    
+    for (var attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        final client = http.Client();
+        try {
+          final response = await client
+              .get(
+                uri,
+                headers: <String, String>{
+                  'accept': 'application/json',
+                  'user-agent': 'CoffeePerson/1.0',
+                },
+              )
+              .timeout(_timeout);
+
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw Exception('HTTP ${response.statusCode}: ${response.body}');
+          }
+
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+          if (decoded is! Map<String, dynamic>) {
+            throw const FormatException('OpenWeatherMap 响应不是 JSON 对象');
+          }
+          return decoded;
     } finally {
       client.close();
     }
+      } catch (e) {
+        lastException = e is Exception ? e : Exception(e.toString());
+        
+        // 如果不是最后一次尝试，等待后重试
+        if (attempt < maxRetries) {
+          // 指数退避：1秒、2秒、4秒...
+          final delaySeconds = 1 << attempt;
+          await Future.delayed(Duration(seconds: delaySeconds));
+        }
+      }
+    }
+    
+    // 所有重试都失败
+    throw lastException ?? Exception('请求失败');
   }
 
   int _mapOwmToWmo(int owmCode) {
