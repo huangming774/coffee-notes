@@ -1,4 +1,4 @@
-package com.example.coffee_person
+package dev.solsynth.community.coffee_person
 
 import android.content.ClipData
 import android.content.Intent
