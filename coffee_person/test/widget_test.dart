@@ -3,8 +3,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:coffee_person/data/coffee_repository.dart';
 import 'package:coffee_person/data/coffee_record.dart';
 import 'package:coffee_person/features/stats/stats_page.dart';
+import 'package:coffee_person/features/stickers/detection_service.dart';
+import 'package:coffee_person/features/stickers/sticker_store.dart';
+import 'package:coffee_person/features/stickers/storage_service.dart';
 import 'package:coffee_person/theme/app_theme.dart';
 import 'package:isar/isar.dart';
+import 'package:provider/provider.dart';
 
 class _FakeCoffeeRepository implements CoffeeStatsRepository {
   final List<CoffeeRecord> _records = [];
@@ -13,7 +17,7 @@ class _FakeCoffeeRepository implements CoffeeStatsRepository {
   Future<void> ensureSeeded() async {}
 
   @override
-  Future<StatsSummary> getStats(StatsRange range) async {
+  Future<StatsSummary> getStats(StatsRange range, {DateTime? anchorDate}) async {
     return const StatsSummary(
       totalCups: 3,
       totalCost: 21,
@@ -70,15 +74,21 @@ class _FakeCoffeeRepository implements CoffeeStatsRepository {
 void main() {
   testWidgets('Stats page renders', (WidgetTester tester) async {
     await tester.pumpWidget(
-      MaterialApp(
-        theme: AppTheme.lightTheme(),
-        darkTheme: AppTheme.darkTheme(),
-        home: StatsPage(
-          repository: _FakeCoffeeRepository(),
-          themeMode: ThemeMode.light,
-          onThemeModeChange: (_) {},
-          accentPalette: AppAccentPalette.coffee,
-          onAccentPaletteChange: (_) {},
+      ChangeNotifierProvider(
+        create: (_) => StickerStore(
+          storageService: StorageService(),
+          detectionService: DetectionService(),
+        ),
+        child: MaterialApp(
+          theme: AppTheme.lightTheme(),
+          darkTheme: AppTheme.darkTheme(),
+          home: StatsPage(
+            repository: _FakeCoffeeRepository(),
+            themeMode: ThemeMode.light,
+            onThemeModeChange: (_) {},
+            accentPalette: AppAccentPalette.coffee,
+            onAccentPaletteChange: (_) {},
+          ),
         ),
       ),
     );

@@ -12,6 +12,21 @@ subprojects {
                 if (namespace == null) {
                     namespace project.group.toString()
                 }
+                compileSdkVersion 36
+            }
+        }
+        if (project.plugins.hasPlugin("com.android.application") ||
+                project.plugins.hasPlugin("com.android.library")) {
+            project.dependencies {
+                implementation "androidx.core:core-ktx:1.13.1"
+            }
+        }
+        project.tasks.withType(JavaCompile).configureEach { task ->
+            if (task.options?.compilerArgs != null) {
+                task.options.compilerArgs.removeAll { it == '-Werror' }
+                if (!task.options.compilerArgs.contains('-Xlint:-options')) {
+                    task.options.compilerArgs.add('-Xlint:-options')
+                }
             }
         }
     }

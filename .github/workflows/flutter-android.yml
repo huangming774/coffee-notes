@@ -1,0 +1,46 @@
+name: Flutter Android
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+defaults:
+  run:
+    working-directory: coffee_person
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build APKs (split per ABI)
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          path: |
+            coffee_person/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            coffee_person/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            coffee_person/build/app/outputs/flutter-apk/app-x86_64-release.apk
+

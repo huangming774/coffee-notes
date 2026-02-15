@@ -7,8 +7,37 @@ import 'package:path_provider/path_provider.dart';
 Widget storedImage(
   String path, {
   BoxFit fit = BoxFit.cover,
+  double? width,
+  double? height,
 }) {
-  return Image.file(File(path), fit: fit);
+  final file = File(path);
+  
+  // 计算合适的缓存尺寸（2倍像素密度）
+  int? cacheWidth;
+  int? cacheHeight;
+  
+  if (width != null) {
+    cacheWidth = (width * 2).toInt();
+  }
+  if (height != null) {
+    cacheHeight = (height * 2).toInt();
+  }
+  
+  // 如果都没指定，使用合理的默认值避免内存过大
+  if (cacheWidth == null && cacheHeight == null) {
+    cacheWidth = 800; // 默认最大宽度
+  }
+  
+  return Image.file(
+    file,
+    fit: fit,
+    width: width,
+    height: height,
+    cacheWidth: cacheWidth,
+    cacheHeight: cacheHeight,
+    gaplessPlayback: true, // 平滑切换，避免闪烁
+    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+  );
 }
 
 Future<String> persistPickedImage(XFile file) async {
